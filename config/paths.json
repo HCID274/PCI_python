@@ -1,0 +1,49 @@
+{
+  "input": {
+    "root_dir": "/work/DTMP/lhqing/PCI/Data/sample/input",
+    "parameters_file": "parameters.dat",
+    "torus_data_file": "TORUSIons_act.dat",
+    "beam_config_file": "LS_condition_JT60SA.txt",
+    "equdata_bz_file": "equdata_BZ",
+    "equdata_be_file": "equdata_be"
+  },
+  "output": {
+    "root_dir": "/work/DTMP/lhqing/PCI/Data/sample/output",
+    "test_single_dir": "test_single",
+    "figures_dir": "figures",
+    "mat_dir": "mat",
+    "fft_dir": "fft"
+  },
+  "task": {
+    "type": "single_time",
+    "data_n": 301,
+    "var_type": 4,
+    "time_point": 98.07,
+    "auto_detect_times": true
+  },
+  "execution": {
+    "device": "cpu",
+    "verbose": true,
+    "save_detailed_results": true,
+    "save_matlab_compatible": true
+  },
+  "validation": {
+    "compare_with_matlab": false,
+    "save_intermediate_plots": true
+  },
+  "processing": {
+    "device": "cuda",
+    "time_n": 150,
+    "tol_n": 101
+  },
+  "preprocess": {
+    "cleanup_original": false,
+    "time_file_prefix": "TORUSIons_act_",
+    "binary_format": "%08d.dat"
+  },
+  "visualization": {
+    "image_format": "png",
+    "image_dpi": 300,
+    "show_intermediate": false
+  }
+}
