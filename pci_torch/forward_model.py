@@ -119,8 +119,10 @@ def forward_projection(
             density_single, R, Z, phi, config, device
         )
         
-        # Reshape回网格形状
-        sampled_grid = sampled_flat.reshape(n_det_v, n_det_t, n_beam)
+        # Reshape回网格形状 (关键修正: 使用Fortran列主序匹配MATLAB)
+        # PyTorch的reshape不支持order参数，使用numpy中转再转回
+        sampled_grid = sampled_flat.reshape(n_det_v, n_det_t, n_beam).cpu().numpy().reshape(n_det_v, n_det_t, n_beam, order='F')
+        sampled_grid = torch.from_numpy(sampled_grid).to(sampled_flat.device)
         sampled_values_list.append(sampled_grid)
     
     sampled_values = torch.stack(sampled_values_list, dim=0)

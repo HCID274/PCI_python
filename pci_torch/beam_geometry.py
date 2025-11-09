@@ -33,15 +33,15 @@ def compute_beam_grid(
     # MATLAB 第62-70行: 坐标转换
     # B1(1,:) = pp1(1:3) - 起点 (R[mm], Z[mm], phi[0-1])
     # B1(2,:) = pp1(4:6) - 终点
-    # 从 BeamConfig 获取原始值
+    # 从 BeamConfig 获取原始值 (已经是米单位)
     B1_start = np.array([
-        beam_config.injection_point[0],  # R [mm]
-        beam_config.injection_point[1],  # Z [mm]
+        beam_config.injection_point[0],  # R [m]
+        beam_config.injection_point[1],  # Z [m]
         beam_config.injection_point[2]   # phi [0-1]
     ])
     B1_end = np.array([
-        beam_config.detection_point[0],   # R [mm]
-        beam_config.detection_point[1],   # Z [mm]
+        beam_config.detection_point[0],   # R [m]
+        beam_config.detection_point[1],   # Z [m]
         beam_config.detection_point[2]    # phi [0-1]
     ])
     
@@ -62,8 +62,8 @@ def compute_beam_grid(
     ]) / 1000.0
     
     # 转换为torch tensor
-    B2_start = torch.tensor(B2_start, dtype=torch.float32, device=device)
-    B2_end = torch.tensor(B2_end, dtype=torch.float32, device=device)
+    B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device)
+    B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device)
     
     # MATLAB 第71-74行: 计算光束长度
     # b2ls = sqrt((B2(1,1)-B2(2,1))^2 + (B2(1,2)-B2(2,2))^2 + (B2(1,3)-B2(2,3))^2)
@@ -75,7 +75,7 @@ def compute_beam_grid(
     
     # MATLAB 第76-78行: 计算光束方向向量
     # p1 = B2(1,:) - B2(2,:)  从终点指向起点
-    p1 = torch.zeros(3, dtype=torch.float32, device=device)
+    p1 = torch.zeros(3, dtype=torch.float64, device=device)
     p1[0] = B2_start[0] - B2_end[0]
     p1[1] = B2_start[1] - B2_end[1]
     p1[2] = B2_start[2] - B2_end[2]
@@ -84,7 +84,7 @@ def compute_beam_grid(
     p1_unit = p1 / torch.norm(p1)
     
     # MATLAB 第80-102行: 计算垂直向量
-    xl = torch.zeros(2, 3, dtype=torch.float32, device=device)
+    xl = torch.zeros(2, 3, dtype=torch.float64, device=device)
     wid1 = beam_config.width_vertical
     wid2 = beam_config.width_toroidal
     
@@ -105,7 +105,7 @@ def compute_beam_grid(
         # MATLAB 第87-101行: 一般情况
         phi_rad = 2 * np.pi * phi_raw
         tan_phi = np.tan(phi_rad)
-        tan_phi_t = torch.tensor(tan_phi, dtype=torch.float32, device=device)
+        tan_phi_t = torch.tensor(tan_phi, dtype=torch.float64, device=device)
         
         # 第一个垂直向量（MATLAB第88-94行）
         xl[0, 0] = p1[2]
@@ -276,10 +276,10 @@ def get_detector_positions(
     
     # 生成 x 坐标（对应 MATLAB 的第一个参数）
     x_coords = torch.tensor([wid1/2.0 * (i - div1) / div1 for i in range(2*div1+1)], 
-                            dtype=torch.float32, device=device)
+                            dtype=torch.float64, device=device)
     # 生成 y 坐标（对应 MATLAB 的第二个参数，注意负号）
     y_coords = torch.tensor([-wid2/2.0 * (i - div2) / div2 for i in range(2*div2+1)], 
-                           dtype=torch.float32, device=device)
+                           dtype=torch.float64, device=device)
     
     # MATLAB 的 meshgrid: [xx1, yy1] = meshgrid(x, y)
     # 其中 x 是列向量，y 是行向量

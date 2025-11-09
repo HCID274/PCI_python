@@ -119,7 +119,7 @@ def load_gene_config(
     device: str = 'cuda'
 ) -> GENEConfig:
     """
-    从parameters.dat和平衡态文件加载GENE配置
+    从parameters.dat和平衡态数据加载GENE配置
     
     Args:
         parameters_file: parameters.dat文件路径
@@ -327,9 +327,9 @@ def load_equilibrium_be(config: GENEConfig, file_path: str, device: str = 'cuda'
         # 读取磁场数据
         n_points = NRGM * NZGM * NPHIGM
         GBPR2 = np.fromfile(f, dtype='>f8', count=n_points)
-        GBPZ2 = np.fromfile(f, dtype='>f8', count=n_points)
-        GBTP2 = np.fromfile(f, dtype='>f8', count=n_points)
-        GBPP2 = np.fromfile(f, dtype='>f8', count=n_points)
+        GBPZ2 = np.fromfile(f, dtype=np.float64, count=n_points)
+        GBTP2 = np.fromfile(f, dtype=np.float64, count=n_points)
+        GBPP2 = np.fromfile(f, dtype=np.float64, count=n_points)
     
     # 如果是2D数据，扩展到3D
     NPHIGM_set = 68  # 标准toroidal点数
@@ -400,8 +400,9 @@ def load_beam_config(ls_condition_file: str) -> BeamConfig:
     
     # 第1行: 入射点和检测点 (R[mm], Z[mm], phi[0-1])
     coords = [float(x.strip()) for x in data_lines[0].split(',')]
-    injection_point = (coords[0], coords[1], coords[2])
-    detection_point = (coords[3], coords[4], coords[5])
+    # 关键修正: 添加单位转换 (mm -> m)，与MATLAB B2=B2/1000.0对应
+    injection_point = (coords[0] / 1000.0, coords[1] / 1000.0, coords[2])
+    detection_point = (coords[3] / 1000.0, coords[4] / 1000.0, coords[5])
     
     # 第2行: 宽度 (wid1[m], wid2[m])
     widths = [float(x.strip()) for x in data_lines[1].split(',')]
@@ -470,7 +471,7 @@ def load_gene_data(
         data_3d[:, :, i] = data[start_idx:end_idx, :]
     
     # 转换为PyTorch张量
-    tensor = to_tensor(data_3d, device=device, dtype=torch.float32)
+    tensor = to_tensor(data_3d, device=device, dtype=torch.float64)
     
     return tensor
 
@@ -648,7 +649,31 @@ def load_equdata_BZ(
     GTC_c[:, -1] = 2.0 * np.pi
     
     # 计算minor radius
-    GAC = np.sqrt((GRC - PA[0])**2 + (GZC - PA[1])**2)
+    print(f"DEBUG3: PA = [{PA[0]:.6f}, {PA[1]:.6f}]")
+    print(f"DEBUG3: GRC形状 = {GRC.shape}")
+    print(f"DEBUG3: GRC范围 = [{np.min(GRC):.6f}, {np.max(GRC):.6f}]")
+    print(f"DEBUG3: GZC范围 = [{np.min(GZC):.6f}, {np.max(GZC):.6f}]")
+    
+    # 计算minor radius - 使用原始平衡态坐标计算，更接近MATLAB
+    GAC_raw = np.sqrt((GRCt2 - PA[0])**2 + (GZCt2 - PA[1])**2)
+    
+    # 进行周期性填充（MATLAB中GAC(:,end) = GAC(:,1)）
+    GAC_padded = np.concatenate([GAC_raw, GAC_raw[:, 0:1]], axis=1)
+    
+    # 如果需要更大的网格，进行最邻近插值
+    if GAC_padded.shape != (IRMAX + 1, ITGMAX + 1):
+        GAC = np.zeros((IRMAX + 1, ITGMAX + 1))
+        for i in range(IRMAX + 1):
+            for j in range(ITGMAX + 1):
+                i_old = min(int(round(i * (GAC_padded.shape[0] - 1) / IRMAX)), GAC_padded.shape[0] - 1)
+                j_old = min(int(round(j * (GAC_padded.shape[1] - 1) / ITGMAX)), GAC_padded.shape[1] - 1)
+                GAC[i, j] = GAC_padded[i_old, j_old]
+    else:
+        GAC = GAC_padded
+    
+    print(f"DEBUG3: 最终GAC形状 = {GAC.shape}")
+    print(f"DEBUG3: 最终GAC范围 = [{np.min(GAC):.6f}, {np.max(GAC):.6f}]")
+    print(f"DEBUG3: 最终GAC最后一层 = [{np.min(GAC[-1,:]):.6f}, {np.max(GAC[-1,:]):.6f}]")
     
     # 转换为Tensor
     result = {
@@ -1095,7 +1120,8 @@ def generate_timedata(
     
     # 以二进制格式写入
     with open(output_path, 'wb') as fid:
-        data.tofile(fid)
+        # 关键修正: 使用Fortran列主序写入，与MATLAB的fwrite行为一致
+        fid.write(data.tobytes(order='F'))
     
     print(f'Generated binary file: {output_path}')
     return output_path
@@ -1223,7 +1249,8 @@ def fread_data_s(
     cols = total_elements // rows
     
     # Reshape为(KYMt, cols)
-    data = data.reshape(rows, cols)
+    # 关键修正: 使用Fortran列主序重塑，与MATLAB的reshape行为一致
+    data = data.reshape((rows, cols), order='F')
     
     # 进一步reshape为3D：(ntheta, nx, nz)
     if config.LYM2 is None or config.KZMt is None:
@@ -1270,11 +1297,11 @@ def fread_data_s(
     NTGMAX = ntheta_per_z  # 应该是400
     data3 = np.zeros_like(data2)
     for i in range(NTGMAX):
-        # MATLAB: i从1到NTGMAX，md=mod(i+(NTGMAX/2), NTGMAX)
-        # 在Python中i从0到NTGMAX-1，需要对应MATLAB的i+1
-        md = ((i + 1) + NTGMAX // 2) % NTGMAX
-        # MATLAB的md+1对应Python的md（因为MATLAB索引从1开始）
-        data3[md, :, :] = data2[i, :, :]
+        # 根据用户的手动追踪分析，正确公式是:
+        # destination_index = ((i + 1) + NTGMAX // 2) % NTGMAX
+        # 这与MATLAB的md = mod(i+half, NTGMAX)完全对应
+        destination_index = ((i + 1) + NTGMAX // 2) % NTGMAX
+        data3[destination_index, :, :] = data2[i, :, :]
     
     # 步骤4: 添加poloidal边界（周期边界）
     # MATLAB 第106行: data3 = [data3; data3(1,:,:)];
@@ -1284,7 +1311,7 @@ def fread_data_s(
     print(f"  数据处理: {data_3d.shape} -> {data_final.shape}")
     
     # 转换为PyTorch张量
-    tensor = to_tensor(data_final, device=device, dtype=torch.float32)
+    tensor = to_tensor(data_final, device=device, dtype=torch.float64)
     
     return tensor
 

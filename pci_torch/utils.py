@@ -10,7 +10,7 @@ from typing import Union, Tuple
 def to_tensor(
     data: Union[np.ndarray, torch.Tensor],
     device: str = 'cuda',
-    dtype: torch.dtype = torch.float32
+    dtype: torch.dtype = torch.float64
 ) -> torch.Tensor:
     """将数据转换为PyTorch张量"""
     if isinstance(data, torch.Tensor):

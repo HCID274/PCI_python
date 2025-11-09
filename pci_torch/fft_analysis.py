@@ -78,7 +78,7 @@ class FFT3DAnalyzer:
         print(f"  数据shape: {pout2.shape}")
         
         # 转换为tensor
-        self.realSpaceData = torch.from_numpy(pout2).to(device=device, dtype=torch.float32)
+        self.realSpaceData = torch.from_numpy(pout2).to(device=device, dtype=torch.float64)
         
         # 加载光束配置获取空间网格（使用PathConfig）
         ls_condition_file = self.path_config.beam_config_file
@@ -161,7 +161,7 @@ class FFT3DAnalyzer:
             t = t * time_norm_factor
         
         # 转换为tensor
-        self.tt = torch.from_numpy(t).to(device=device, dtype=torch.float32)
+        self.tt = torch.from_numpy(t).to(device=device, dtype=torch.float64)
         
         print(f"  空间网格: {self.xx.shape}")
         print(f"  时间矩阵: {self.tt.shape}")

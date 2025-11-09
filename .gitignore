@@ -153,6 +153,9 @@ logs/
 *.out
 *.err
 
+# PyPCI specific output files
+*.o*
+
 # GPU memory and temporary files
 *.tmp
 *.temp

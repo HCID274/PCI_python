@@ -44,11 +44,11 @@ def probe_local_trilinear(
     """
     # 确保输入是tensor
     if not isinstance(R, torch.Tensor):
-        R = torch.tensor(R, device=density_3d.device, dtype=torch.float32)
+        R = torch.tensor(R, device=density_3d.device, dtype=torch.float64)
     if not isinstance(Z, torch.Tensor):
-        Z = torch.tensor(Z, device=density_3d.device, dtype=torch.float32)
+        Z = torch.tensor(Z, device=density_3d.device, dtype=torch.float64)
     if not isinstance(PHI, torch.Tensor):
-        PHI = torch.tensor(PHI, device=density_3d.device, dtype=torch.float32)
+        PHI = torch.tensor(PHI, device=density_3d.device, dtype=torch.float64)
     
     # 展平为1D
     original_shape = R.shape
@@ -85,8 +85,20 @@ def probe_local_trilinear(
         theta_i = theta[i]
         phi_i = PHI_flat[i] / (2*np.pi)  # 归一化到[0,1]
         
-        # 获取theta索引
-        theta_p_lower, theta_p_upper = bisec(theta_i, GTC_c_last)
+        # 获取theta索引 - 修正bisec返回值处理
+        # MATLAB: theta_p = bisec(theta, obj.GTC_c(end, :));
+        # bisec返回两个索引，需要根据数组排序方向正确解释
+        theta_idx1, theta_idx2 = bisec(theta_i, GTC_c_last)
+        
+        # 根据MATLAB逻辑，通常取第一个索引作为主索引
+        # 检查GTC_c_last的排序方向
+        if GTC_c_last[0] < GTC_c_last[-1]:  # 升序
+            theta_p_lower = theta_idx1
+            theta_p_upper = theta_idx2
+        else:  # 降序
+            theta_p_lower = theta_idx2  
+            theta_p_upper = theta_idx1
+            
         poid_cyl_2 = theta_p_lower
         
         # 步骤4: 检查是否在plasma内部 - 对应MATLAB第11-21行
@@ -94,8 +106,11 @@ def probe_local_trilinear(
         r_boundary_l = config.GAC[-1, theta_p_lower]  # theta_p(1)
         r_boundary_u = config.GAC[-1, theta_p_upper]  # theta_p(2)
         
-        # 临时注释掉内部检查，直接进行插值
-        # if (r_i < r_boundary_l) and (r_i < r_boundary_u):
+        # 关键修正: 恢复边界条件检查，与MATLAB保持一致
+        if not (r_i < r_boundary_l and r_i < r_boundary_u):
+            # 点在等离子体边界外，返回0
+            result[i] = 0.0
+            continue
         
         # 查找r索引 - 对应MATLAB第13行
         GAC_at_theta = config.GAC[:, poid_cyl_2]
@@ -107,6 +122,7 @@ def probe_local_trilinear(
         
         # 正确的索引映射：GAC索引>=inside时，density索引=GAC索引
         if r_p_lower < config.inside:
+            result[i] = 0.0
             continue  # 点在内部区域，density没有数据，返回0
         
         # 转换为density索引（直接使用GAC索引，因为density使用相同的索引系统）
@@ -157,14 +173,22 @@ def probe_local_trilinear(
             da_cyl_3 = (phi_max - phi_i) / phi_diff
         
         # 步骤7: 设置索引变量 - 对应MATLAB第34-39行
-        m1 = poid_cyl_1
-        n1 = poid_cyl_2
-        p1 = p_p_lower
-        m2 = min(m1 + 1, density_3d.shape[1] - 1)  # 确保不越界
-        n2 = min(n1 + 1, density_3d.shape[0] - 1)  # 确保不越界
-        p2 = min(p1 + 1, density_3d.shape[2] - 1)  # 确保不越界
+        # 重要: 根据MATLAB probeEQ_local_s.m分析
+        # m1 = poid_cyl(1) = r_p(1) (径向索引)
+        # n1 = poid_cyl(2) = theta_p(1) (极向索引) 
+        # p1 = poid_cyl(3) = p_p(1) (phi索引)
+        # MATLAB访问: data(n1, m1, p1) = data(极向, 径向, phi)
+        # density_3d形状: (ntheta, nx, nz) = (极向, 径向, phi)
+        # 所以正确的映射: density_3d[n1, m1, p1]
+        m1 = poid_cyl_1  # 径向
+        n1 = poid_cyl_2  # 极向  
+        p1 = p_p_lower   # phi
+        m2 = min(m1 + 1, density_3d.shape[1] - 1)  # 径向边界
+        n2 = min(n1 + 1, density_3d.shape[0] - 1)  # 极向边界
+        p2 = min(p1 + 1, density_3d.shape[2] - 1)  # phi边界
         
-        # 步骤8: 三线性插值 - 对应MATLAB第41-44行
+        # 步骤8: 三线性插值 - 修正索引顺序
+        # 原代码错误: density_3d[n1, m1, p1] - 这个顺序是正确的
         term1 = da_cyl_3 * (da_cyl_2 * (da_cyl_1 * density_3d[n1, m1, p1] + (1.0 - da_cyl_1) * density_3d[n1, m2, p1]) \
             + (1.0 - da_cyl_2) * (da_cyl_1 * density_3d[n2, m1, p1] + (1.0 - da_cyl_1) * density_3d[n2, m2, p1]))
         

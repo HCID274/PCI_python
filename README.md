@@ -15,10 +15,6 @@ PCI/code/pyPCI/
 ├── complete_pipeline.py          # 完整流程示例
 ├── config/
 │   └── paths.json                # 配置文件
-├── examples/                     # 示例代码
-│   ├── complete_pipeline.py
-│   ├── example_basic.py
-│   └── example_batch.py
 ├── pci_torch/                    # 核心模块
 │   ├── __init__.py
 │   ├── config.py                 # 配置管理

@@ -56,7 +56,7 @@ class PCIVisualizer:
         
         # 绘制中心线，强调弯曲特征
         center = grid[div1//2, div2//2, :, :]
-        ax.plot(center[:, 0], center[:, 1], center[:, 2], 'r-', linewidth=3, 
+        ax.plot(center[:, 0], center[:, 1], center[:, 2], 'r-', linewidth=1, 
                 alpha=0.9, label='Beam center')
         
         # 绘制起点和终点（对应MATLAB plot3(B2(:,1),B2(:,2),B2(:,3),'o')）
@@ -515,8 +515,8 @@ class PCIVisualizer:
             
             # 选择第一个物理量（PHI）作为示例
             phi_data = p2[:, 0].cpu().numpy()
-            ax.plot(R_np, np.real(phi_data), 'r-', linewidth=1.5, label='Real')
-            ax.plot(R_np, np.imag(phi_data), 'b-', linewidth=1.5, label='Imag')
+            ax.plot(R_np, np.real(phi_data), 'r-', linewidth=1, label='Real')
+            ax.plot(R_np, np.imag(phi_data), 'b-', linewidth=1, label='Imag')
             
             ax.set_title(f'm={m}, n={n}')
             ax.set_xlabel('r')
