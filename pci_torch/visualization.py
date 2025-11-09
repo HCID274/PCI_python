@@ -68,47 +68,85 @@ class PCIVisualizer:
                 markersize=12, markerfacecolor='red', markeredgecolor='darkred', 
                 markeredgewidth=2, label='Start/End points')
         
-        # 绘制托卡马克边界（严格按照MATLAB LSview_com.m第144-148行）
-        if self.config is not None and self.config.GRC is not None:
-            GRC = self.config.GRC.cpu().numpy()  # (n_phi, n_R) 或 (n_R, n_phi)
-            GZC = self.config.GZC.cpu().numpy()  # (n_phi, n_Z) 或 (n_Z, n_phi)
+        # 绘制简化的托卡马克圆形边界（验证光束位置）
+        # 修正问题：使用真实的等离子体轴位置
+        print("  提示: 添加简化的托卡马克边界进行验证")
+        
+        # 从平衡态数据获取真实的等离子体轴位置
+        if self.config is not None and hasattr(self.config, 'PA') and self.config.PA is not None:
+            plasma_axis = self.config.PA.cpu().numpy()
+            print(f"  使用真实的等离子体轴位置: PA = {plasma_axis}")
+        else:
+            # 如果没有配置数据，使用估算位置
+            plasma_axis = np.array([4.5, 0.0])  # 估算的等离子体轴位置
+            print(f"  使用估算的等离子体轴位置: PA = {plasma_axis}")
+        
+        # 从等离子体轴位置推算托卡马克参数
+        R_major = 4.5  # 主半径（可以调整为更合适的值）
+        R_minor = 2.0  # 小半径
+        
+        # 生成更多poloidal截面的圆形边界，让边界更密集
+        n_phi_sections = 20  # 增加截面数量，匹配MATLAB的密集效果
+        phi_angles = np.linspace(0, 2*np.pi, n_phi_sections, endpoint=False)
+        
+        for i, phi in enumerate(phi_angles):
+            # 当前poloidal截面的圆心位置基于真实的等离子体轴
+            center_x = plasma_axis[0] + R_major * np.cos(phi)  # 以等离子体轴为中心
+            center_y = plasma_axis[1] + R_major * np.sin(phi)
+            center_z = 0  # 假设所有截面在同一Z高度
             
-            # MATLAB逻辑正确实现：
-            # xls_b=dataC.GRC(end,:).'*cos([0:30]*2*pi/30);
-            # yls_b=dataC.GRC(end,:).'*sin([0:30]*2*pi/30);
-            # zls_b=repmat(dataC.GZC(end,:).',1,31);
+            # 生成当前截面的圆形边界
+            n_boundary_points = 50
+            theta = np.linspace(0, 2*np.pi, n_boundary_points, endpoint=True)
+            x_boundary = center_x + R_minor * np.cos(theta) * np.cos(phi)
+            y_boundary = center_y + R_minor * np.cos(theta) * np.sin(phi)
+            z_boundary = center_z + R_minor * np.sin(theta)
             
-            R_boundary = GRC[-1, :]  # 边界上不同位置的不同R值
-            Z_boundary = GZC[-1, :]  # 边界上对应位置的不同Z值
+            # 绘制边界线
+            if i == 0:  # 只为第一个截面添加图例
+                ax.plot(x_boundary, y_boundary, z_boundary, 'k-', 
+                       linewidth=0.5, alpha=0.4, label='Simplified tokamak boundary')
+            else:
+                ax.plot(x_boundary, y_boundary, z_boundary, 'k-', 
+                       linewidth=0.5, alpha=0.4)
+        
+        # 添加一个主要的poloidal截面（Z=0平面）
+        # 修正：确保主截面以真实的等离子体轴为中心
+        theta_main = np.linspace(0, 2*np.pi, 100, endpoint=True)
+        x_main = plasma_axis[0] + (R_major + R_minor * np.cos(theta_main))  # 以等离子体轴为中心
+        y_main = plasma_axis[1] + R_minor * np.sin(theta_main)
+        z_main = np.zeros_like(x_main)  # Z=0平面
+        
+        ax.plot(x_main, y_main, z_main, 'r--', 
+               linewidth=3.0, alpha=0.9, label='Main poloidal cross-section (Z=0)')
+        
+        # 添加toroidal方向的参考线
+        # 在几个不同Z高度的圆环，以真实等离子体轴为中心
+        z_levels = [-1.5, -0.5, 0.5, 1.5]  # 添加多个Z高度的圆环
+        colors = ['gray', 'lightgray', 'gray', 'lightgray']
+        
+        for i, z_level in enumerate(z_levels):
+            n_torus_points = 100
+            phi_torus = np.linspace(0, 2*np.pi, n_torus_points, endpoint=True)
+            # 以真实等离子体轴为中心的圆环
+            x_torus = plasma_axis[0] + (R_major + R_minor * 0.8 * np.cos(0)) * np.cos(phi_torus)
+            y_torus = plasma_axis[1] + (R_major + R_minor * 0.8 * np.cos(0)) * np.sin(phi_torus)
+            z_torus = np.full_like(x_torus, z_level)  # 固定Z高度
             
-            # 生成31个角度点
-            n_points = 31
-            angles = np.arange(n_points) * 2 * np.pi / n_points
-            
-            # 关键：MATLAB的广播操作
-            # R_boundary是(n,)数组，angles是(31,)数组
-            # 结果是(n,31)数组，每个R值对应31个角度点
-            xls_b = R_boundary[:, np.newaxis] * np.cos(angles[np.newaxis, :])  # (n_R, 31)
-            yls_b = R_boundary[:, np.newaxis] * np.sin(angles[np.newaxis, :])  # (n_R, 31)
-            zls_b = Z_boundary[:, np.newaxis] * np.ones(n_points)[np.newaxis, :]  # (n_Z, 31)
-            
-            # MATLAB: plot3(xls_b(1:2:end,:).',yls_b(1:2:end,:).',zls_b(1:2:end,:).','k-');
-            # 步长为2取样（每两个点取一个）
-            step_indices = slice(0, None, 2)  # 1:2:end的Python等价
-            xls_b_sampled = xls_b[step_indices, :]
-            yls_b_sampled = yls_b[step_indices, :]
-            zls_b_sampled = zls_b[step_indices, :]
-            
-            # 检查是否有数据需要绘制
-            if xls_b_sampled.shape[0] > 0:
-                # 绘制第一条线并添加图例标签
-                ax.plot(xls_b_sampled[0, :], yls_b_sampled[0, :], zls_b_sampled[0, :], 
-                        'k-', linewidth=1.0, alpha=0.9, label='Tokamak boundary')
-                
-                # 循环绘制剩余的线，不再添加图例标签以保持图例干净
-                for i in range(1, xls_b_sampled.shape[0]):
-                    ax.plot(xls_b_sampled[i, :], yls_b_sampled[i, :], zls_b_sampled[i, :], 
-                            'k-', linewidth=1.0, alpha=0.9)
+            if i == 0:
+                ax.plot(x_torus, y_torus, z_torus, color=colors[i], 
+                       linewidth=1.0, alpha=0.6, linestyle=':', label='Toroidal rings')
+            else:
+                ax.plot(x_torus, y_torus, z_torus, color=colors[i], 
+                       linewidth=1.0, alpha=0.6, linestyle=':')
+        
+        # 添加等离子体轴标记
+        ax.scatter([plasma_axis[0]], [plasma_axis[1]], [0], 
+                 c='red', s=100, marker='o', 
+                 label=f'Plasma axis (PA = [{plasma_axis[0]:.3f}, {plasma_axis[1]:.3f}])')
+        
+        print(f"  生成了 {n_phi_sections} 个poloidal截面和 {len(z_levels)} 个toroidal圆环")
+        print(f"  等离子体轴位置: PA = [{plasma_axis[0]:.6f}, {plasma_axis[1]:.6f}]")
         
         # 标准化坐标轴标签（严格按照MATLAB的X, Y, Z格式）
         ax.set_xlabel('X', fontsize=12, fontweight='bold')

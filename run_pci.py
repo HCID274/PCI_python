@@ -38,7 +38,7 @@ def run_single_time(config: Dict[str, Any], device: str = None):
     print("=" * 80)
     
     # 加载配置
-    path_config = PathConfig.from_config_file("pyPCI/config/paths.json")
+    path_config = PathConfig.from_config_file(str(Path(__file__).parent / "config" / "paths.json"))
     path_config.create_output_dirs()
     
     # 获取任务参数
