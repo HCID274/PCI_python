@@ -445,7 +445,7 @@ def load_gene_data(
     # 读取二进制文件
     data = np.fromfile(file_path, dtype=np.float64)
     
-    # 根据配置reshape
+    # Reshape数据
     # 数据格式: (KYMt, cols) 其中 KYMt = 400 (poloidal), cols = nx * nz
     if config.KYMt is None:
         # 根据数据推断维度
@@ -455,23 +455,40 @@ def load_gene_data(
         config.LYM2 = config.KYMt
         config.LZM2 = config.KZMt + 1
     
-    # Reshape数据
-    n_rows = config.KYMt
-    n_cols = len(data) // n_rows
-    data = data.reshape(n_rows, n_cols)
+    # 重构数据
+    total_size = len(data)
+    print(f"DEBUG: total_size={total_size}, KYMt={config.KYMt}, nx0={config.nx0}, KZMt={config.KZMt}")
+    
+    # 计算每个z层面的数据量
+    data_per_z = config.KYMt * config.nx0
+    n_z_actual = total_size // data_per_z
+    print(f"DEBUG: data_per_z={data_per_z}, n_z_actual={n_z_actual}")
+    
+    # Reshape到2D: (KYMt, nx0 * n_z)
+    data_2d = data.reshape(config.KYMt, total_size // config.KYMt)
+    print(f"DEBUG: data_2d shape={data_2d.shape}")
     
     # 进一步reshape到 (ntheta, nx, nz)
-    # 需要根据KZMt切分
-    n_theta_per_z = config.LYM2 // (config.KZMt + 1)
-    data_3d = np.zeros((n_theta_per_z, config.nx0, config.KZMt + 1))
+    # 假设数据排列为：每个z层面连续排列
+    nx = config.nx0
+    nz = n_z_actual
     
-    for i in range(config.KZMt + 1):
-        start_idx = n_theta_per_z * i
-        end_idx = n_theta_per_z * (i + 1)
-        data_3d[:, :, i] = data[start_idx:end_idx, :]
+    # 检查是否能整除
+    if data_2d.shape[1] % nx != 0:
+        print(f"Warning: 无法整除，data_2d.shape[1]={data_2d.shape[1]}, nx={nx}")
+        # 使用实际的除法结果
+        nx = data_2d.shape[1] // nz
+    
+    print(f"DEBUG: 最终形状: ({config.KYMt}, {nx}, {nz})")
+    data_3d = data_2d.reshape(config.KYMt, nx, nz)
+    
+    # 确保数据形状匹配MATLAB: (ntheta, nx, nz) = (极向, 径向, phi)
+    # 已经是正确的形状，直接使用
+    # data_3d = data_3d.transpose(1, 0, 2)  # 不需要转置了
+    final_data = data_3d
     
     # 转换为PyTorch张量
-    tensor = to_tensor(data_3d, device=device, dtype=torch.float64)
+    tensor = to_tensor(final_data, device=device, dtype=torch.float64)
     
     return tensor
 

@@ -95,13 +95,20 @@ class PCIVisualizer:
             # MATLAB: plot3(xls_b(1:2:end,:).',yls_b(1:2:end,:).',zls_b(1:2:end,:).','k-');
             # 步长为2取样（每两个点取一个）
             step_indices = slice(0, None, 2)  # 1:2:end的Python等价
-            x_plot = xls_b[step_indices].flatten()
-            y_plot = yls_b[step_indices].flatten()
-            z_plot = zls_b[step_indices].flatten()
+            xls_b_sampled = xls_b[step_indices, :]
+            yls_b_sampled = yls_b[step_indices, :]
+            zls_b_sampled = zls_b[step_indices, :]
             
-            # 绘制托卡马克边界（加粗，透明度增强）
-            ax.plot(x_plot, y_plot, z_plot, 'k-', linewidth=1.0, alpha=0.9, 
-                    label='Tokamak boundary')
+            # 检查是否有数据需要绘制
+            if xls_b_sampled.shape[0] > 0:
+                # 绘制第一条线并添加图例标签
+                ax.plot(xls_b_sampled[0, :], yls_b_sampled[0, :], zls_b_sampled[0, :], 
+                        'k-', linewidth=1.0, alpha=0.9, label='Tokamak boundary')
+                
+                # 循环绘制剩余的线，不再添加图例标签以保持图例干净
+                for i in range(1, xls_b_sampled.shape[0]):
+                    ax.plot(xls_b_sampled[i, :], yls_b_sampled[i, :], zls_b_sampled[i, :], 
+                            'k-', linewidth=1.0, alpha=0.9)
         
         # 标准化坐标轴标签（严格按照MATLAB的X, Y, Z格式）
         ax.set_xlabel('X', fontsize=12, fontweight='bold')

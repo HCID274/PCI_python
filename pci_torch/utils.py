@@ -15,6 +15,12 @@ def to_tensor(
     """将数据转换为PyTorch张量"""
     if isinstance(data, torch.Tensor):
         return data.to(device=device, dtype=dtype)
+    
+    # 处理字节序问题
+    if hasattr(data, 'dtype') and data.dtype.byteorder not in ('=', '|'):
+        # 数据不是本机字节序，需要转换
+        data = data.astype(data.dtype.newbyteorder('='))
+    
     return torch.from_numpy(data).to(device=device, dtype=dtype)
 
 

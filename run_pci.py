@@ -38,7 +38,7 @@ def run_single_time(config: Dict[str, Any], device: str = None):
     print("=" * 80)
     
     # 加载配置
-    path_config = PathConfig.from_config_file("config/paths.json")
+    path_config = PathConfig.from_config_file("pyPCI/config/paths.json")
     path_config.create_output_dirs()
     
     # 获取任务参数
@@ -88,12 +88,9 @@ def run_single_time(config: Dict[str, Any], device: str = None):
     
     # 执行PCI正向投影
     print("执行PCI正向投影...")
-    pci_result = forward_projection(
-        density_3d,
-        gene_config,
-        beam_config,
-        device=device,
-        return_line_integral=True
+    pci_result, debug_info = forward_projection(
+        density_3d, gene_config, beam_config, 
+        device=device, return_line_integral=False, return_debug_info=True
     )
     
     # 保存结果
@@ -106,14 +103,37 @@ def run_single_time(config: Dict[str, Any], device: str = None):
     # 保存为MATLAB兼容格式
     try:
         import scipy.io as sio
-        sio.savemat(str(output_path), {
+        
+        # 保存调试信息
+        debug_data = {
             'pci_signal': pci_result.cpu().numpy(),
             'time_point': time_point,
             'var_type': task_config['var_type'],
             'data_n': task_config['data_n'],
             'device': device
-        })
+        }
+        
+        # 如果有中间结果，也保存
+        if 'debug_info' in locals():
+            import torch
+            for key, value in debug_info.items():
+                if isinstance(value, torch.Tensor):
+                    debug_data[key] = value.cpu().numpy()
+                else:
+                    debug_data[key] = value
+        
+        sio.savemat(str(output_path), debug_data)
         print(f"  结果已保存: {output_path}")
+        
+        # 同时保存NPZ格式用于详细分析
+        npz_path = output_path.with_suffix('.npz')
+        import torch
+        import numpy as np
+        npz_data = {k: v.cpu().numpy() if isinstance(v, torch.Tensor) else v 
+                   for k, v in debug_data.items()}
+        np.savez(str(npz_path), **npz_data)
+        print(f"  调试数据已保存: {npz_path}")
+        
     except ImportError:
         # 如果没有scipy，保存为numpy格式
         numpy_path = output_path.with_suffix('.npy')

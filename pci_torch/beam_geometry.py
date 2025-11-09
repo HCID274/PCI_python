@@ -48,18 +48,18 @@ def compute_beam_grid(
     # B2(:,1) = B1(:,1).*cos(2*pi*B1(:,3)) - X坐标
     # B2(:,2) = B1(:,1).*sin(2*pi*B1(:,3)) - Y坐标
     # B2(:,3) = B1(:,2) - Z坐标
-    # B2 = B2/1000.0 - 单位转换（毫米到米）
+    # 修正: B1已经是米单位，不需要除以1000.0进行单位转换
     B2_start = np.array([
         B1_start[0] * np.cos(2 * np.pi * B1_start[2]),
         B1_start[0] * np.sin(2 * np.pi * B1_start[2]),
         B1_start[1]
-    ]) / 1000.0
+    ])  # 移除 / 1000.0
     
     B2_end = np.array([
         B1_end[0] * np.cos(2 * np.pi * B1_end[2]),
         B1_end[0] * np.sin(2 * np.pi * B1_end[2]),
         B1_end[1]
-    ]) / 1000.0
+    ])  # 移除 / 1000.0
     
     # 转换为torch tensor
     B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device)
@@ -74,11 +74,11 @@ def compute_beam_grid(
     )
     
     # MATLAB 第76-78行: 计算光束方向向量
-    # p1 = B2(1,:) - B2(2,:)  从终点指向起点
+    # 修正: p1 = B2_end - B2_start  从注入点指向检测点
     p1 = torch.zeros(3, dtype=torch.float64, device=device)
-    p1[0] = B2_start[0] - B2_end[0]
-    p1[1] = B2_start[1] - B2_end[1]
-    p1[2] = B2_start[2] - B2_end[2]
+    p1[0] = B2_end[0] - B2_start[0]
+    p1[1] = B2_end[1] - B2_start[1]
+    p1[2] = B2_end[2] - B2_start[2]
     
     # 计算单位向量
     p1_unit = p1 / torch.norm(p1)
@@ -142,10 +142,11 @@ def compute_beam_grid(
     # 注意：MATLAB 中 b2ls 被重新赋值为步长
     b2ls_step = b2ls / divls
     
-    # MATLAB 第108-111行: 初始化网格（从检测器端点开始）
-    xls = torch.ones(div1_2, div2_2, divls_2, device=device) * B2_end[0]
-    yls = torch.ones(div1_2, div2_2, divls_2, device=device) * B2_end[1]
-    zls = torch.ones(div1_2, div2_2, divls_2, device=device) * B2_end[2]
+    # MATLAB 第108-111行: 初始化网格（从注入点开始）
+    # 修正: 应该从注入点(B2_start)开始，不是检测点(B2_end)
+    xls = torch.ones(div1_2, div2_2, divls_2, device=device) * B2_start[0]
+    yls = torch.ones(div1_2, div2_2, divls_2, device=device) * B2_start[1]
+    zls = torch.ones(div1_2, div2_2, divls_2, device=device) * B2_start[2]
     
     # MATLAB 第113-118行: 添加垂直方向1的偏移
     # MATLAB: for j=1:div1_2, replix(j,:,:)=ones(div2_2,divls_2)*(real(j-1)-div1)/div1
@@ -250,10 +251,7 @@ def get_detector_positions(
     [xx1,yy1]=meshgrid(wid1/2*[-div1:div1]/div1,-wid2/2*[-div2:div2]/div2);
     xx1 = fliplr(xx1);
     
-    根据MATLAB代码逻辑，检测器的3D位置应该从光束网格中提取：
-    - 光束网格从检测器端点（B2_end）开始初始化
-    - 添加垂直方向的偏移后，在光束方向偏移为0的位置就是检测器位置
-    - 即：detector_coords = grid_xyz[:, :, 0]（光束方向的第一个索引）
+    注意：根据修正后的光束网格逻辑，检测器位置需要从光束路径的终点提取
     
     Args:
         beam_config: 光束配置
@@ -294,18 +292,18 @@ def get_detector_positions(
     detector_grid = torch.stack([yy1, xx1_flipped], dim=-1)
     
     # 检测器的3D位置：从光束网格中提取
-    # 根据MATLAB代码逻辑（第108-130行）：
-    # - 网格从检测器端点（B2_end）开始初始化
+    # 修正: 根据新的光束网格逻辑：
+    # - 网格从注入点(B2_start)开始初始化
     # - 添加垂直方向的偏移
-    # - 光束方向的偏移从0开始（j=1，对应Python的j=0）
-    # 所以检测器位置 = grid_xyz[:, :, 0]（光束方向的第一个索引）
+    # - 光束方向的偏移从0开始，在终点结束
+    # 所以检测器位置 = grid_xyz[:, :, -1]（光束方向的最后一个索引）
     if beam_grid is None:
         beam_grid = compute_beam_grid(beam_config, device=device)
     
     grid_xyz = beam_grid['grid_xyz']  # (div1_2, div2_2, divls_2, 3)
     
-    # 提取检测器位置：光束方向的第一个索引（offset=0）
-    detector_coords = grid_xyz[:, :, 0, :]  # (div1_2, div2_2, 3)
+    # 提取检测器位置：光束方向的最后一个索引（offset=0）
+    detector_coords = grid_xyz[:, :, -1, :]  # (div1_2, div2_2, 3)
     
     return detector_coords, detector_grid
 

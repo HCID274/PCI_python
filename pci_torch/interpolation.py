@@ -180,12 +180,18 @@ def probe_local_trilinear(
         # MATLAB访问: data(n1, m1, p1) = data(极向, 径向, phi)
         # density_3d形状: (ntheta, nx, nz) = (极向, 径向, phi)
         # 所以正确的映射: density_3d[n1, m1, p1]
-        m1 = poid_cyl_1  # 径向
-        n1 = poid_cyl_2  # 极向  
-        p1 = p_p_lower   # phi
-        m2 = min(m1 + 1, density_3d.shape[1] - 1)  # 径向边界
-        n2 = min(n1 + 1, density_3d.shape[0] - 1)  # 极向边界
-        p2 = min(p1 + 1, density_3d.shape[2] - 1)  # phi边界
+        
+        # 严格边界检查
+        m1 = max(0, min(poid_cyl_1, density_3d.shape[1] - 1))  # 径向，范围[0, 127]
+        n1 = max(0, min(poid_cyl_2, density_3d.shape[0] - 1))  # 极向，范围[0, 399]
+        p1 = max(0, min(p_p_lower, density_3d.shape[2] - 1))   # phi，范围[0, 28]
+        
+        m2 = max(0, min(m1 + 1, density_3d.shape[1] - 1))  # 径向边界
+        n2 = max(0, min(n1 + 1, density_3d.shape[0] - 1))  # 极向边界
+        p2 = max(0, min(p1 + 1, density_3d.shape[2] - 1))  # phi边界
+        
+        # 调试信息
+        # print(f"DEBUG: indices m1={m1}, m2={m2}, n1={n1}, n2={n2}, p1={p1}, p2={p2}, shape={density_3d.shape}")
         
         # 步骤8: 三线性插值 - 修正索引顺序
         # 原代码错误: density_3d[n1, m1, p1] - 这个顺序是正确的
