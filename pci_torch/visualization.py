@@ -82,8 +82,19 @@ class PCIVisualizer:
             print(f"  使用估算的等离子体轴位置: PA = {plasma_axis}")
         
         # 从等离子体轴位置推算托卡马克参数
-        R_major = 4.5  # 主半径（可以调整为更合适的值）
-        R_minor = 2.0  # 小半径
+        # 修正：使用真实的等离子体轴位置和边界计算
+        if self.config is not None and hasattr(self.config, 'PA') and self.config.PA is not None:
+            plasma_axis = self.config.PA.cpu().numpy()
+            R_major = plasma_axis[0]  # 使用真实的等离子体轴R坐标作为主半径
+            # 计算真实的小半径：从GAC边界数据的最大值估算
+            if hasattr(self.config, 'GAC') and self.config.GAC is not None:
+                R_minor = self.config.GAC.max().item() * 0.8  # 略小于最大边界值
+            else:
+                R_minor = 2.0  # 备用值
+        else:
+            # 如果没有配置数据，使用现有值
+            R_major = 4.5  
+            R_minor = 2.0
         
         # 生成更多poloidal截面的圆形边界，让边界更密集
         n_phi_sections = 20  # 增加截面数量，匹配MATLAB的密集效果
@@ -339,6 +350,8 @@ class PCIVisualizer:
         if density_np.ndim == 3:
             phi_idx = density_np.shape[2] // 2
             density_2d = density_np[:, :, phi_idx]
+            # 修正维度不匹配：密度数据 (R, Z) -> (Z, R) 以匹配MATLAB坐标网格
+            density_2d = density_2d.T  # 转置以匹配 (129, 401) 的坐标网格
         else:
             density_2d = density_np
             

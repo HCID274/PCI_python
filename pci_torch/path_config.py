@@ -17,6 +17,7 @@ class PathConfig:
     # 输入路径
     input_dir: Path
     output_dir: Path
+    data_n_dir: Optional[str] = None  # 添加data_n_dir属性
     
     # 自动推导的路径
     parameters_file: Optional[Path] = None
@@ -119,6 +120,7 @@ class PathConfig:
         return cls(
             input_dir=root_input_dir,
             output_dir=test_single_dir,  # 主输出目录使用test_single_dir
+            data_n_dir=input_config.get('data_n_dir'),  # 添加data_n_dir
             parameters_file=None,  # 让__post_init__构建完整路径
             equdata_bz_file=None,  # 让__post_init__构建完整路径
             equdata_be_file=None,  # 让__post_init__构建完整路径
@@ -145,12 +147,19 @@ class PathConfig:
         return self.mat_dir / f'LocalCross-Section_{data_n}_overall.mat'
     
     def get_time_data_file(self, time_step: int) -> Path:
-        """获取时间数据文件路径"""
-        return self.input_dir / f'TORUSIons_act_{time_step}.dat'
+        """获取时间数据文件路径 - 读取原始TORUSIons_act文件并处理"""
+        if hasattr(self, 'data_n_dir') and self.data_n_dir:
+            # 使用原始文件 TORUSIons_act_9807.dat，与MATLAB一致
+            return self.input_dir / self.data_n_dir / f'TORUSIons_act_{time_step}.dat'
+        else:
+            return self.input_dir / f'TORUSIons_act_{time_step}.dat'
     
     def get_binary_data_file(self, time_step: int) -> Path:
         """获取二进制数据文件路径"""
-        return self.input_dir / f'{time_step:08d}.dat'
+        if hasattr(self, 'data_n_dir') and self.data_n_dir:
+            return self.input_dir / self.data_n_dir / f'{time_step:08d}.dat'
+        else:
+            return self.input_dir / f'{time_step:08d}.dat'
     
     @classmethod
     def from_env(cls, prefix: str = 'PCI'):

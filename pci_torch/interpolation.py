@@ -101,12 +101,16 @@ def probe_local_trilinear(
             
         poid_cyl_2 = theta_p_lower
         
-        # 步骤4: 检查是否在plasma内部 - 对应MATLAB第11-21行
-        # MATLAB: if ((r < obj.GAC(end, theta_p(1))) && (r < obj.GAC(end, theta_p(2))))
+        # 最终修正：直接模拟MATLAB的实际行为
+        # MATLAB中x1(a,1)是极坐标半径，但probeEQ_local_s将其当作笛卡尔坐标处理
+        # 为了获得相同结果，Python必须与MATLAB保持相同的"错误"逻辑
+        
+        # 方法：使用简化的坐标系统，直接使用极坐标系统与GAC对比
+        # 跳过复杂的笛卡尔坐标转换，直接按极坐标检查边界
         r_boundary_l = config.GAC[-1, theta_p_lower]  # theta_p(1)
         r_boundary_u = config.GAC[-1, theta_p_upper]  # theta_p(2)
         
-        # 关键修正: 恢复边界条件检查，与MATLAB保持一致
+        # 关键修正: 使用极坐标r_i与边界直接比较（与MATLAB保持一致）
         if not (r_i < r_boundary_l and r_i < r_boundary_u):
             # 点在等离子体边界外，返回0
             result[i] = 0.0

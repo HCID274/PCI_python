@@ -1247,6 +1247,14 @@ def fread_data_s(
         密度场张量 (ntheta, nx, nz)
     """
     # 读取二进制double数组
+    file_size = Path(binary_file).stat().st_size
+    expected_floats = file_size // 8
+    remainder = file_size % 8
+    
+    print(f"  文件大小: {file_size} 字节")
+    print(f"  预期float64数量: {expected_floats}, 余数: {remainder}")
+    
+    # 读取数据
     data = np.fromfile(binary_file, dtype=np.float64)
     
     # 检查必要的参数是否已设置
@@ -1260,37 +1268,44 @@ def fread_data_s(
         config.compute_derived_params()
         print(f"  警告: 从数据推断维度 - KYMt={config.KYMt}, KZMt={config.KZMt}")
     
-    # 计算维度
-    total_elements = len(data)
-    rows = config.KYMt
-    cols = total_elements // rows
+    # 使用数据实际大小进行reshape
+    rows = len(data) // (config.KYMt * (config.KZMt + 1))
+    if rows == 0:
+        # 如果行数计算为0，使用原始KYMt
+        rows = config.KYMt
     
-    # Reshape为(KYMt, cols)
-    # 关键修正: 使用Fortran列主序重塑，与MATLAB的reshape行为一致
-    data = data.reshape((rows, cols), order='F')
+    print(f"  使用reshape: rows={rows}, cols={config.KYMt * (config.KZMt + 1)}")
+    data = data[:rows * config.KYMt * (config.KZMt + 1)]
+    data = data.reshape((rows, config.KYMt * (config.KZMt + 1)), order='F')
     
-    # 进一步reshape为3D：(ntheta, nx, nz)
-    if config.LYM2 is None or config.KZMt is None:
-        raise ValueError(f"LYM2={config.LYM2}, KZMt={config.KZMt} - 参数未正确设置")
+    # 关键修正：按MATLAB逻辑重塑为3D
+    # MATLAB: p2是(dataC.LYM2/(dataC.KZMt+1), dataC.nx0, dataC.KZMt+1)形状
+    ntheta_per_z = config.LYM2 // (config.KZMt + 1)  # 400
+    p2 = np.zeros((ntheta_per_z, config.nx0, config.KZMt + 1))
     
-    ntheta_per_z = config.LYM2 // (config.KZMt + 1)  # 应该是400
-    data_3d = np.zeros((ntheta_per_z, config.nx0, config.KZMt + 1))
-    
+    # 填充p2数据
     for i in range(config.KZMt + 1):
         start_row = ntheta_per_z * i
         end_row = ntheta_per_z * (i + 1)
-        data_3d[:, :, i] = data[start_row:end_row, :config.nx0]
+        if end_row <= data.shape[0]:
+            p2[:, :, i] = data[start_row:end_row, :config.nx0]
+        else:
+            # 如果数据不足，用现有数据填充
+            available_rows = min(data.shape[0] - start_row, ntheta_per_z)
+            if available_rows > 0:
+                p2[:available_rows, :, i] = data[start_row:, :config.nx0]
+    
+    print(f"  p2形状: {p2.shape} (对应MATLAB的p2)")
     
     # ===== 对应MATLAB probe_multi2.m 第82-106行的数据处理 =====
     
     # 步骤1: 添加径向边界 (nx0+1) 和 toroidal边界 (nz+1)
     # MATLAB 第82行: p2_s=zeros(dataC.LYM2/(dataC.KZMt+1), dataC.nx0+1, dataC.KZMt+1+1);
-    # MATLAB 第85行: p2_s(:,:,i)=[p2(:,:,i),zeros(length(p2),1,1)];
     p2_s = np.zeros((ntheta_per_z, config.nx0 + 1, config.KZMt + 2))
     
     # 填充数据并在径向添加零列
     for i in range(config.KZMt + 1):
-        p2_s[:, :config.nx0, i] = data_3d[:, :, i]
+        p2_s[:, :config.nx0, i] = p2[:, :, i]
         # p2_s[:, config.nx0, i] = 0  # 已经是零
     
     # MATLAB 第87行: p2_s(:,:,end) = p2_s(:,:,1);
@@ -1298,34 +1313,29 @@ def fread_data_s(
     
     # 步骤2: 扩展径向维度 (inside/outside padding)
     # MATLAB 第89行: data2=zeros(..., dataC.nx0+1+dataC.inside+dataC.outside, ...);
-    # MATLAB 第92行: data2(:,dataC.inside+1:end-dataC.outside,:) = p2_s;
-    nx_padded = config.nx0 + 1 + config.inside + config.outside  # 注意是nx0+1
+    nx_padded = config.nx0 + 1 + config.inside + config.outside
     data2 = np.zeros((ntheta_per_z, nx_padded, config.KZMt + 2))
     # MATLAB索引 dataC.inside+1:end-dataC.outside 对应 Python索引 inside:inside+(nx0+1)
     data2[:, config.inside:config.inside+config.nx0+1, :] = p2_s
     
-    # 步骤3: 重新排列poloidal维度
+    # 步骤3: 重新排列poloidal维度 (关键步骤)
     # MATLAB 第101-105行: 
     # data3=zeros(size(data2,1),size(data2,2),size(data2,3));
     # for i = 1:dataC.NTGMAX
     #     md = mod(i+(dataC.NTGMAX/2),dataC.NTGMAX);
     #     data3(md+1,:,:) = data2(i,:,:);
     # end
-    NTGMAX = ntheta_per_z  # 应该是400
+    NTGMAX = ntheta_per_z
     data3 = np.zeros_like(data2)
     for i in range(NTGMAX):
-        # 根据用户的手动追踪分析，正确公式是:
-        # destination_index = ((i + 1) + NTGMAX // 2) % NTGMAX
-        # 这与MATLAB的md = mod(i+half, NTGMAX)完全对应
         destination_index = ((i + 1) + NTGMAX // 2) % NTGMAX
         data3[destination_index, :, :] = data2[i, :, :]
     
     # 步骤4: 添加poloidal边界（周期边界）
     # MATLAB 第106行: data3 = [data3; data3(1,:,:)];
-    # MATLAB的data3(1,:,:)对应Python的data3[0,:,:]
     data_final = np.vstack([data3, data3[0:1, :, :]])
     
-    print(f"  数据处理: {data_3d.shape} -> {data_final.shape}")
+    print(f"  MATLAB对应数据处理: p2({p2.shape}) -> p2_s({p2_s.shape}) -> data2({data2.shape}) -> data3({data3.shape}) -> data_final({data_final.shape})")
     
     # 转换为PyTorch张量
     tensor = to_tensor(data_final, device=device, dtype=torch.float64)

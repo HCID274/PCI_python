@@ -18,6 +18,8 @@ from pci_torch.batch_processor import process_time_series
 from pci_torch.data_loader import load_gene_config_from_parameters, load_beam_config
 from pci_torch.forward_model import forward_projection
 from pci_torch.visualization import PCIVisualizer
+import matplotlib.pyplot as plt
+import torch
 
 def load_config(config_file: str = None) -> Dict[str, Any]:
     """加载配置文件"""
@@ -163,13 +165,20 @@ def run_single_time(config: Dict[str, Any], device: str = None):
             pci_result, beam_config, time_point, str(detector_fig_path)
         )
         
-        # 3. 密度场poloidal截面图 (按照MATLAB cont_data2_s.m逻辑修正)
-        print("  Generating density poloidal cross-section plot...")
-        density_fig_path = path_config.figures_dir / f"fig2_density_poloidal_t{time_point:.2f}.png"
-        visualizer.plot_density_slice(
+        # 3. 密度场poloidal截面图 -> 修正为沿光束路径的PCI信号分布图
+        print("  Generating beam path PCI signal distribution plot...")
+        # 获取沿光束路径的PCI信号（对应MATLAB的pout）
+        pci_result, debug_info = forward_projection(
             density_3d, gene_config, beam_config, 
-            save_path=str(density_fig_path)
+            device=device, return_line_integral=True, return_debug_info=True
         )
+        # pci_result形状: (n_det_v, n_det_t, n_beam_points)
+        # 需要flatten到1D信号用于绘图
+        pci_signal_1d = pci_result.flatten()  # 对应MATLAB的abs(pout)
+        
+        # 生成信号分布图
+        beam_signal_fig_path = path_config.figures_dir / f"fig2_density_poloidal_t{time_point:.2f}.png"
+        create_beam_path_signal_plot(pci_signal_1d, str(beam_signal_fig_path))
         
         # 4. 2D波数空间图 (Figure 4 - 对应MATLAB)
         print("  Generating 2D wavenumber space plot...")
@@ -240,6 +249,40 @@ def run_time_series(config: Dict[str, Any], device: str = None):
     print(f"  IntegratedSignal shape: {pout2.shape}")
     
     return pout1, pout2
+
+def create_beam_path_signal_plot(pci_signal_1d, save_path):
+    """生成沿光束路径的PCI信号分布图（对应MATLAB的plot(abs(pout))）
+    
+    Args:
+        pci_signal_1d: 1D PCI信号数组
+        save_path: 图片保存路径
+    """
+    fig = plt.figure(figsize=(12, 8))
+    
+    # 计算信号绝对值（对应MATLAB的abs(pout)）
+    signal_abs = torch.abs(pci_signal_1d)
+    signal_np = signal_abs.cpu().numpy()
+    
+    # 绘制信号分布
+    plt.plot(signal_np, 'b-', linewidth=1.5, label='PCI Signal')
+    plt.xlabel('Beam Path Point')
+    plt.ylabel('Signal Magnitude')
+    plt.title('PCI Signal Distribution Along Beam Path (Figure 2)')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # 添加统计信息
+    max_val = signal_np.max()
+    min_val = signal_np.min()
+    mean_val = signal_np.mean()
+    plt.text(0.02, 0.98, f'Max: {max_val:.2f}\nMin: {min_val:.2f}\nMean: {mean_val:.2f}', 
+             transform=plt.gca().transAxes, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    print(f"  Beam path signal plot saved: {save_path}")
+    plt.close()
 
 def main():
     """主函数"""
