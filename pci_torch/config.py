@@ -114,17 +114,33 @@ class GENEConfig:
         # 计算参考电荷
         self.q_ref = self.charge1 * 1.602176634e-19 if self.charge1 else None
         
-        # 计算参考速度
-        self.c_ref = np.sqrt(2 * (self.T_ref * 1000 * 1.602176634e-19) / 
-                           (self.mass1 * 1.67262192369e-27)) if self.mass1 else None
+        # 计算参考速度 - 使用MATLAB的公式
+        # MATLAB: c_ref = sqrt(T_ref2 / m_ref) = sqrt(T_ref * 1000 * q_ref / m_ref)
+        if self.T_ref and self.m_ref and hasattr(self, 'q_ref'):
+            # 使用T_ref2 = T_ref * 1000 * q_ref (将keV转换为焦耳)
+            T_ref2_joules = self.T_ref * 1000 * self.q_ref
+            self.c_ref = np.sqrt(T_ref2_joules / self.m_ref) if self.m_ref else None
+        elif self.T_ref and self.m_ref:
+            # 备用计算：直接使用温度和质量的公式
+            e_charge = 1.602176634e-19  # 元电荷
+            T_ref_joules = self.T_ref * 1000 * e_charge  # keV转焦耳
+            self.c_ref = np.sqrt(2 * T_ref_joules / self.m_ref) if self.m_ref else None
+        else:
+            self.c_ref = None
         
-        # 计算参考频率
-        self.omega_ref = self.c_ref / self.L_ref if self.c_ref and self.L_ref else None
+        # 计算参考频率 - 使用MATLAB的公式
+        # MATLAB: omega_ref = q_ref * B_ref / m_ref
+        if hasattr(self, 'q_ref') and self.B_ref and self.m_ref:
+            self.omega_ref = self.q_ref * self.B_ref / self.m_ref
+        else:
+            self.omega_ref = None
         
-        # 计算参考回旋半径
-        self.rho_ref = self.c_ref / (self.B_ref * self.q_ref / self.mass1) if all([
-            self.c_ref, self.B_ref, self.q_ref, self.mass1
-        ]) else None
+        # 计算参考回旋半径 - 使用MATLAB的公式
+        # MATLAB: rho_ref = c_ref / omega_ref = c_ref / (q_ref * B_ref / m_ref)
+        if self.c_ref and self.omega_ref:
+            self.rho_ref = self.c_ref / self.omega_ref
+        else:
+            self.rho_ref = None
     
     def update_from_dict(self, config_dict: dict):
         """从字典更新配置"""
@@ -134,13 +150,17 @@ class GENEConfig:
         return self
     
     def compute_derived_params(self):
-        """计算衍生参数"""
-        # 计算数据维度参数
+        """计算衍生参数 - 与MATLAB的GENEClass保持一致"""
+        # 计算数据维度参数 (按照MATLAB逻辑)
         if self.KYMt is not None:
-            self.LYM2 = self.KYMt
+            self.LYM2 = self.KYMt  # MATLAB: obj.LYM2 = obj.KYMt;
         if self.KZMt is not None:
-            self.LZM2 = self.KZMt + 1
-            self.LMAX = (self.LZM2 - 1) // 2
+            self.LZM2 = self.KZMt // 2 + 1  # MATLAB: obj.LZM2 = obj.KZMt/2+1;
+            
+            # MATLAB额外计算
+            self.KYM = self.KYMt // 2 if self.KYMt else None  # MATLAB: obj.KYM = obj.KYMt/2;
+            self.KZM = self.LZM2 - 1 if self.LZM2 else None  # MATLAB: obj.KZM = obj.LZM2-1;
+            self.LMAX = 2 * self.KYM * (self.KZM + 1) - 1 if (self.KYM and self.KZM) else None  # MATLAB: obj.LMAX = 2*obj.KYM*(obj.KZM+1)-1;
         
         # 重新计算物理参数
         self.compute_physics_params()

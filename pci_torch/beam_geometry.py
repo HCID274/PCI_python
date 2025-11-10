@@ -12,6 +12,7 @@ from .config import BeamConfig, GENEConfig
 
 def compute_beam_grid(
     beam_config: BeamConfig,
+    config: GENEConfig = None,
     device: str = 'cuda'
 ) -> Dict[str, torch.Tensor]:
     """
@@ -65,17 +66,18 @@ def compute_beam_grid(
     print(f'B1_end (原始坐标m): [{B1_end[0]:.6f}, {B1_end[1]:.6f}, {B1_end[2]:.6f}]')
     
     # B2(:,1) = B1(:,1).*cos(2*pi*B1(:,3)) - X坐标
-    # B2(:,2) = B1(:,1).*sin(2*pi*B1(:,3)) - Y坐标
+    # B2(:,2) = B1(:,1).*sin(2*pi*B1(:,3)) - Y坐标  
     # B2(:,3) = B1(:,2) - Z坐标
     # ✅ 修正: B1已经是m单位，但仍需要保持与MATLAB一致的逻辑
+    # 关键修正: B2_start应该是注入点，B2_end应该是检测点
     B2_start = np.array([
-        B1_start[0] * np.cos(2 * np.pi * B1_start[2]),
+        B1_start[0] * np.cos(2 * np.pi * B1_start[2]),  # 注入点的笛卡尔坐标
         B1_start[0] * np.sin(2 * np.pi * B1_start[2]),
         B1_start[1]
     ])
     
     B2_end = np.array([
-        B1_end[0] * np.cos(2 * np.pi * B1_end[2]),
+        B1_end[0] * np.cos(2 * np.pi * B1_end[2]),     # 检测点的笛卡尔坐标
         B1_end[0] * np.sin(2 * np.pi * B1_end[2]),
         B1_end[1]
     ])
@@ -96,9 +98,10 @@ def compute_beam_grid(
     )
     
     # MATLAB 第76-78行: 计算光束方向向量
-    # ⚠️ 关键修正: p1 = B2(1,:) - B2(2,:) (从检测点指向注入点，与MATLAB一致)
+    # ⚠️ 关键修正: MATLAB中p1 = B2(起点) - B2(终点) = 从终点指向起点！
+    # 与我们之前理解的B2_end - B2_start相反
     p1 = torch.zeros(3, dtype=torch.float64, device=device)
-    p1[0] = B2_start[0] - B2_end[0]  # 修正: B2(1,:) - B2(2,:)
+    p1[0] = B2_start[0] - B2_end[0]  # 修正: 与MATLAB一致 - 从终点指向起点
     p1[1] = B2_start[1] - B2_end[1]
     p1[2] = B2_start[2] - B2_end[2]
     
@@ -225,8 +228,9 @@ def compute_beam_grid(
     # MATLAB 中 j 从 1 开始，所以 real(j-1)/divls 当 j=1 时为 0，当 j=divls_2 时为 divls/divls=1
     # Python 中 j 从 0 开始，所以 j/divls 当 j=0 时为 0，当 j=divls_2-1 时为 (divls_2-1)/divls = divls/divls=1
     # 注意：divls_2 = divls + 1，所以 j 的范围是 [0, divls]，最后一个 j=divls 时 offset=divls/divls=1
+    
     for j in range(divls_2):
-        offset = j / divls  # 对应 MATLAB 的 real(j-1)/divls，其中 MATLAB 的 j 从 1 开始
+        offset = j / divls
         xls[:, :, j] = xls[:, :, j] + offset * p1[0]
         yls[:, :, j] = yls[:, :, j] + offset * p1[1]
         zls[:, :, j] = zls[:, :, j] + offset * p1[2]
@@ -250,6 +254,14 @@ def compute_beam_grid(
     
     # 堆叠成网格
     grid_xyz = torch.stack([xls, yls, zls], dim=-1)  # (div1_2, div2_2, divls_2, 3)
+    
+    # 🔧 关键修复: 保持beam坐标为物理坐标，不应用L_ref缩放
+    if config is not None and hasattr(config, 'L_ref') and config.L_ref is not None:
+        print(f'\n=== L_REF SCALING NOT APPLIED (BEAM IN PHYSICAL UNITS) ===')
+        print(f'L_ref: {config.L_ref:.6f}')
+        print(f'grid_xyz范围: [{grid_xyz.min():.6f}, {grid_xyz.max():.6f}]')
+        print(f'Beam坐标保持物理单位，与GAC*l_ref的物理坐标系统匹配')
+        # 不应用任何缩放，保持物理坐标
     
     # 展平为 (N, 3)
     grid_flat = torch.stack([xls1, yls1, zls1], dim=-1)  # (N, 3)

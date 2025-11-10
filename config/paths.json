@@ -9,7 +9,7 @@
     "equdata_be_file": "equdata_be"
   },
   "output": {
-    "root_dir": "/work/DTMP/lhqing/PCI/Data/sample/output",
+    "root_dir": "/work/DTMP/lhqing/PCI/Data/python_output",
     "test_single_dir": "test_single",
     "figures_dir": "figures",
     "mat_dir": "mat",

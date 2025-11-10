@@ -42,6 +42,18 @@ def probe_local_trilinear(
     Returns:
         插值结果 (scalar or tensor)
     """
+    # 🔧 恢复原始处理逻辑，不应该自动添加batch维度
+    original_density_shape = density_3d.shape
+    if density_3d.ndim == 3:
+        # 保持3D输入不变，不添加batch维度
+        # 原逻辑：只处理3D张量
+        pass
+    elif density_3d.ndim == 4:
+        # 如果是4D，移除batch维度，保持为3D
+        density_3d = density_3d.squeeze(0)  # 移除batch维度
+    else:
+        raise ValueError(f"density_3d必须是3D或4D张量，但得到的是{density_3d.ndim}D: {density_3d.shape}")
+    
     # 确保输入是tensor
     if not isinstance(R, torch.Tensor):
         R = torch.tensor(R, device=density_3d.device, dtype=torch.float64)
@@ -69,6 +81,16 @@ def probe_local_trilinear(
     PA = config.PA  # (2,) [R_axis, Z_axis]
     r = torch.sqrt((R_flat - PA[0])**2 + (Z_flat - PA[1])**2)
     theta = torch.remainder(torch.atan2(Z_flat - PA[1], R_flat - PA[0]), 2*np.pi)
+    
+    # 🔧 关键修复: 对GAC边界应用L_ref缩放以匹配光束坐标系统
+    if hasattr(config, 'L_ref') and config.L_ref is not None:
+        # GAC数据是归一化坐标，需要乘以L_ref转换为物理坐标以匹配光束坐标
+        GAC_scaled = config.GAC * config.L_ref
+        GAC_last_layer_scaled = GAC_scaled[-1, :]  # 最外层
+        GAC_for_interpolation = GAC_scaled
+    else:
+        GAC_last_layer_scaled = config.GAC[-1, :]
+        GAC_for_interpolation = config.GAC
     
     # 步骤2: 使用bisec查找theta索引 - 对应MATLAB第8行
     GTC_c_last = config.GTC_c[-1, :]  # 最外层的theta坐标
@@ -101,14 +123,10 @@ def probe_local_trilinear(
             
         poid_cyl_2 = theta_p_lower
         
-        # 最终修正：直接模拟MATLAB的实际行为
-        # MATLAB中x1(a,1)是极坐标半径，但probeEQ_local_s将其当作笛卡尔坐标处理
-        # 为了获得相同结果，Python必须与MATLAB保持相同的"错误"逻辑
-        
         # 方法：使用简化的坐标系统，直接使用极坐标系统与GAC对比
         # 跳过复杂的笛卡尔坐标转换，直接按极坐标检查边界
-        r_boundary_l = config.GAC[-1, theta_p_lower]  # theta_p(1)
-        r_boundary_u = config.GAC[-1, theta_p_upper]  # theta_p(2)
+        r_boundary_l = GAC_last_layer_scaled[theta_p_lower]  # theta_p(1)
+        r_boundary_u = GAC_last_layer_scaled[theta_p_upper]  # theta_p(2)
         
         # 关键修正: 使用极坐标r_i与边界直接比较（与MATLAB保持一致）
         if not (r_i < r_boundary_l and r_i < r_boundary_u):
@@ -117,7 +135,7 @@ def probe_local_trilinear(
             continue
         
         # 查找r索引 - 对应MATLAB第13行
-        GAC_at_theta = config.GAC[:, poid_cyl_2]
+        GAC_at_theta = GAC_for_interpolation[:, poid_cyl_2]
         
         # GAC数据不是单调的，使用线性查找替代bisec
         r_diffs = torch.abs(GAC_at_theta - r_i)
@@ -141,15 +159,30 @@ def probe_local_trilinear(
         # 查找phi索引 - 对应MATLAB第15-17行
         p_p_lower, p_p_upper = bisec(phi_i, philist)
         
-        # 边界检查：如果phi_i超出philist的范围，返回0
-        if phi_i < philist[0] or phi_i > philist[-1]:
-            continue  # 跳过这个点，保持result[i]=0
+        # 🔧 详细调试p_p_lower
+        if i < 2:  # 只为前2个点打印调试信息
+            print(f"  DEBUG phi索引: p_p_lower={p_p_lower}, p_p_upper={p_p_upper}")
         
-        poid_cyl_3 = p_p_lower
+        # 确保p_p_lower是标量
+        if hasattr(p_p_lower, 'item'):
+            p_p_lower_scalar = p_p_lower.item()
+        else:
+            p_p_lower_scalar = int(p_p_lower)
+            
+        if hasattr(p_p_upper, 'item'):
+            p_p_upper_scalar = p_p_upper.item()
+        else:
+            p_p_upper_scalar = int(p_p_upper)
+        
+        # 🔧 调试标量转换
+        if i < 2:
+            print(f"  标量转换后: p_p_lower={p_p_lower_scalar}, p_p_upper={p_p_upper_scalar}")
+        
+        poid_cyl_3 = p_p_lower_scalar
         
         # 步骤5: 获取边界值 - 对应MATLAB第23-28行
-        r_min = config.GAC[poid_cyl_1, poid_cyl_2]
-        r_max = config.GAC[min(poid_cyl_1 + 1, config.GAC.shape[0] - 1), poid_cyl_2]  # m1+1，确保不越界
+        r_min = GAC_for_interpolation[poid_cyl_1, poid_cyl_2]
+        r_max = GAC_for_interpolation[min(poid_cyl_1 + 1, GAC_for_interpolation.shape[0] - 1), poid_cyl_2]  # m1+1，确保不越界
         theta_min = GTC_c_last[poid_cyl_2]
         theta_max = GTC_c_last[min(poid_cyl_2 + 1, GTC_c_last.shape[0] - 1)]  # n1+1，确保不越界
         phi_min = philist[poid_cyl_3]
@@ -183,22 +216,41 @@ def probe_local_trilinear(
         # p1 = poid_cyl(3) = p_p(1) (phi索引)
         # MATLAB访问: data(n1, m1, p1) = data(极向, 径向, phi)
         # density_3d形状: (ntheta, nx, nz) = (极向, 径向, phi)
-        # 所以正确的映射: density_3d[n1, m1, p1]
+        # 正确的映射: density_3d[n1, m1, p1] (3D索引)
         
-        # 严格边界检查
-        m1 = max(0, min(poid_cyl_1, density_3d.shape[1] - 1))  # 径向，范围[0, 127]
-        n1 = max(0, min(poid_cyl_2, density_3d.shape[0] - 1))  # 极向，范围[0, 399]
-        p1 = max(0, min(p_p_lower, density_3d.shape[2] - 1))   # phi，范围[0, 28]
+        # 严格边界检查，确保索引是标量
+        m1 = int(max(0, min(poid_cyl_1, density_3d.shape[1] - 1)))  # 径向，范围[0, 127]
+        n1 = int(max(0, min(poid_cyl_2, density_3d.shape[0] - 1)))  # 极向，范围[0, 399]
+        p1 = int(max(0, min(p_p_lower_scalar, density_3d.shape[2] - 1)))   # phi，范围[0, 28]
         
-        m2 = max(0, min(m1 + 1, density_3d.shape[1] - 1))  # 径向边界
-        n2 = max(0, min(n1 + 1, density_3d.shape[0] - 1))  # 极向边界
-        p2 = max(0, min(p1 + 1, density_3d.shape[2] - 1))  # phi边界
+        m2 = int(max(0, min(m1 + 1, density_3d.shape[1] - 1)))  # 径向边界，修正：min确保不越界
+        n2 = int(max(0, min(n1 + 1, density_3d.shape[0] - 1)))  # 极向边界，修正：min确保不越界
+        p2 = int(max(0, min(p1 + 1, density_3d.shape[2] - 1)))  # phi边界，修正：min确保不越界
         
-        # 调试信息
-        # print(f"DEBUG: indices m1={m1}, m2={m2}, n1={n1}, n2={n2}, p1={p1}, p2={p2}, shape={density_3d.shape}")
+        # 🔧 调试信息
+        if i < 2:  # 只为前2个点打印调试信息，避免输出过多
+            print(f"DEBUG 点{i}: n1={n1}, m1={m1}, p1={p1} -> density_3d[{n1},{m1},{p1}]={density_3d[n1, m1, p1]:.3f}")
+        elif i == 2:
+            print("  ...")  # 表示省略中间调试信息
         
-        # 步骤8: 三线性插值 - 修正索引顺序
-        # 原代码错误: density_3d[n1, m1, p1] - 这个顺序是正确的
+        # 步骤8: 三线性插值 - 按照MATLAB probeEQ_local_s.m第41-44行
+        # MATLAB: data(n1, m1, p1) 其中 n1=极向, m1=径向, p1=phi
+        # Python: density_3d[n1, m1, p1] 其中 n1=极向, m1=径向, p1=phi
+        # 径向插值权重 - 按照MATLAB probeEQ_local_s.m第30行 (逆权重)
+        r_min_val = GAC_for_interpolation[m1, n1]
+        r_max_val = GAC_for_interpolation[m2, n1]
+        da_cyl_1 = (r_max_val - r_i) / (r_max_val - r_min_val + 1e-9)  # 逆权重
+        
+        # 极向插值权重 - 按照MATLAB probeEQ_local_s.m第31行 (逆权重) - 使用GTC_c！
+        theta_min = GTC_c_last[n1]
+        theta_max = GTC_c_last[min(n1 + 1, GTC_c_last.shape[0] - 1)]
+        da_cyl_2 = (theta_max - theta_i) / (theta_max - theta_min + 1e-9)  # 逆权重
+        
+        # 环向插值权重 - 按照MATLAB probeEQ_local_s.m第32行 (逆权重)
+        phi_min_val = philist[p1]
+        phi_max_val = philist[p2]
+        da_cyl_3 = (phi_max_val - phi_i) / (phi_max_val - phi_min_val + 1e-9)  # 逆权重
+        
         term1 = da_cyl_3 * (da_cyl_2 * (da_cyl_1 * density_3d[n1, m1, p1] + (1.0 - da_cyl_1) * density_3d[n1, m2, p1]) \
             + (1.0 - da_cyl_2) * (da_cyl_1 * density_3d[n2, m1, p1] + (1.0 - da_cyl_1) * density_3d[n2, m2, p1]))
         
@@ -209,4 +261,6 @@ def probe_local_trilinear(
     # else: 保持result[i] = 0 (已经在初始化时设置)
     
     # 在plasma外的点保持为0（已经初始化为0）
-    return result.reshape(original_shape)
+    result = result.reshape(original_shape)
+    
+    return result
