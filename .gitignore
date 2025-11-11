@@ -159,3 +159,4 @@ logs/
 # GPU memory and temporary files
 *.tmp
 *.temp
+debug_output/

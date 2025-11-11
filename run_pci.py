@@ -92,7 +92,7 @@ def run_single_time(config: Dict[str, Any], device: str = None):
     print("执行PCI正向投影...")
     pci_result, debug_info = forward_projection(
         density_3d, gene_config, beam_config, 
-        device=device, return_line_integral=False, return_debug_info=True
+        device=device, return_line_integral=True, return_debug_info=True  # DEBUG: 设置为True获取中间数据
     )
     
     # 保存结果

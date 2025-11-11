@@ -1149,10 +1149,10 @@ def generate_timedata(
     filename = f'{int(time_t * 100):08d}.dat'
     output_path = os.path.join(output_dir, filename)
     
-    # 以二进制格式写入
+    # 以二进制格式写入 - 关键修正: 使用行主序与MATLAB的fwrite兼容
     with open(output_path, 'wb') as fid:
-        # 关键修正: 使用Fortran列主序写入，与MATLAB的fwrite行为一致
-        fid.write(data.tobytes(order='F'))
+        # MATLAB的fwrite使用行主序（C order），Python也应该一致
+        fid.write(data.tobytes(order='C'))  # 使用行主序，与MATLAB的fwrite一致
     
     print(f'Generated binary file: {output_path}')
     return output_path

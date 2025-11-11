@@ -95,127 +95,157 @@ def forward_projection(
     print(f"DEBUG: 数据形状用于插值: {density_3d.shape}")
     B, ntheta, nx, nz = density_3d.shape
     
+    # === 断点1: 数据加载阶段 (插值前的基础数据) ===
+    print("\n=== 断点1: 数据加载阶段 ===")
+    
+    import numpy as np
+    from pathlib import Path
+    
+    debug_dir = Path("debug_output")
+    debug_dir.mkdir(exist_ok=True)
+    
+    # 保存原始3D密度场（插值前的基础数据）
+    density_3d_numpy = density_3d.squeeze(0).cpu().numpy()  # 移除batch维度
+    np.savetxt(debug_dir / "stage1_3d_density_field.txt", density_3d_numpy.reshape(-1, nz), fmt='%.8e')
+    
+    # 保存密度场统计信息
+    density_stats = {
+        'stage': '1_data_loading_completed',
+        'shape': [ntheta, nx, nz],
+        'min': density_3d_numpy.min().item(),
+        'max': density_3d_numpy.max().item(),
+        'mean': density_3d_numpy.mean().item(),
+        'std': density_3d_numpy.std().item(),
+        'nonzero_count': np.count_nonzero(density_3d_numpy)
+    }
+    
+    import json
+    with open(debug_dir / "stage1_density_stats.json", 'w') as f:
+        json.dump(density_stats, f, indent=2)
+    
+    print(f"✓ 断点1: 3D密度场数据已保存")
+    print(f"  - 形状: {ntheta} × {nx} × {nz}")
+    print(f"  - 数据范围: [{density_stats['min']:.3e}, {density_stats['max']:.3e}]")
+    print(f"  - 非零元素: {density_stats['nonzero_count']} / {ntheta*nx*nz}")
+    print("=== 退出: 数据加载阶段完成 ===\n")
+    # exit(0)  # 注释掉，让程序继续运行到断点2
+    
     # 步骤1: 生成或使用缓存的光束网格
     if cache_beam_grid is None:
         beam_grid = compute_beam_grid(beam_config, config=config, device=device)
     else:
         beam_grid = cache_beam_grid
     
+    # === 断点2: 几何计算阶段 ===
+    print("\n=== 断点2: 几何计算阶段 ===")
+    
     grid_xyz = beam_grid['grid_xyz']  # (n_det_v, n_det_t, n_beam, 3)
     n_det_v, n_det_t, n_beam, _ = grid_xyz.shape
     
-    # 步骤2: 转换光束网格到柱坐标
-    # 重新设计的展平逻辑：确保每个detector位置访问不同的beam路径
-    # 目标：展平后每个detector位置都有其对应的连续beam点
-    # 方法：将detector维度展平为一个维度，beam维度保持不变
-    # (9, 7, 3001, 3) -> (63, 3001, 3) 其中 63=9*7
-    n_det_v, n_det_t, n_beam, _ = grid_xyz.shape
-    grid_xyz_reshaped = grid_xyz.reshape(-1, n_beam, 3)  # (63, 3001, 3)
-    grid_flat = grid_xyz_reshaped.reshape(-1, 3)         # (63*3001, 3) = (189063, 3)
+    # 保存光束几何数据
+    grid_xyz_numpy = grid_xyz.cpu().numpy()
     
-    # 现在grid_flat的顺序是：
-    # detector(0,0)的beam点0, detector(0,0)的beam点1, ..., detector(0,0)的beam点3000,
-    # detector(0,1)的beam点0, detector(0,1)的beam点1, ..., detector(0,1)的beam点3000,
-    # ...
+    # 保存坐标数据
+    x_coords = grid_xyz_numpy[:,:,:,0].flatten()  # X坐标
+    y_coords = grid_xyz_numpy[:,:,:,1].flatten()  # Y坐标  
+    z_coords = grid_xyz_numpy[:,:,:,2].flatten()  # Z坐标
     
-    x, y, z = grid_flat[:, 0], grid_flat[:, 1], grid_flat[:, 2]
+    np.savetxt(debug_dir / "stage2_beam_geometry_x.txt", x_coords, fmt='%.8e')
+    np.savetxt(debug_dir / "stage2_beam_geometry_y.txt", y_coords, fmt='%.8e')
+    np.savetxt(debug_dir / "stage2_beam_geometry_z.txt", z_coords, fmt='%.8e')
     
-    # 使用精确的probe_local_trilinear（对应MATLAB的probeEQ_local_s）
-    R, Z, phi = cartesian_to_cylindrical(x, y, z)
-    
-    # 收集调试信息
-    debug_info = {
-        'grid_xyz_shape': grid_xyz.shape,
-        'grid_flat_shape': grid_flat.shape,
-        'R_range': [R.min().item(), R.max().item()],
-        'Z_range': [Z.min().item(), Z.max().item()],
-        'phi_range': [phi.min().item(), phi.max().item()],
-        'density_3d_shape': density_3d.shape
+    # 保存光束几何统计信息
+    beam_stats = {
+        'stage': '2_beam_geometry_completed',
+        'shape': [n_det_v, n_det_t, n_beam, 3],
+        'x_range': [float(x_coords.min()), float(x_coords.max())],
+        'y_range': [float(y_coords.min()), float(y_coords.max())],
+        'z_range': [float(z_coords.min()), float(z_coords.max())],
+        'total_points': int(len(x_coords))
     }
     
-    # 步骤3: 使用probe_local_trilinear进行精确插值（单点版本）
-    # 优化版本：保持MATLAB逻辑的同时提升性能
-    sampled_values_list = []
-    for b in range(B):
-        density_single = density_3d[b]  # (ntheta, nx, nz)
-        
-        # 批量处理插值（保持MATLAB逐点逻辑，提升计算效率）
-        sampled_flat = _batch_probe_local_trilinear(
-            density_single, R, Z, phi, config, device
-        )
-        
-        # Reshape回网格形状 (匹配新的展平顺序)
-        # 新的展平顺序: (9,7,3001,3) -> (-1,3001,3) -> (-1,3)
-        # 所以重塑顺序应该是: (-1,3) -> (-1,3001) -> (63, 3001) -> (9, 7, 3001)
-        total_detectors = n_det_v * n_det_t
-        sampled_grid_permuted = sampled_flat.reshape(total_detectors, n_beam)  # (63, 3001)
-        sampled_grid = sampled_grid_permuted.reshape(n_det_v, n_det_t, n_beam)  # (9, 7, 3001)
-        sampled_values_list.append(sampled_grid)
-        
-        # 收集插值统计信息
-        debug_info[f'sampled_values_b{b}_range'] = [sampled_grid.min().item(), sampled_grid.max().item()]
-        debug_info[f'sampled_values_b{b}_nonzero'] = (sampled_grid != 0).sum().item()
+    with open(debug_dir / "stage2_beam_stats.json", 'w') as f:
+        json.dump(beam_stats, f, indent=2)
     
-    sampled_values = torch.stack(sampled_values_list, dim=0)
-    # shape: (B, n_det_v, n_det_t, n_beam)
+    print(f"✓ 断点2: 光束几何数据已保存")
+    print(f"  - 网格形状: {n_det_v} × {n_det_t} × {n_beam} × 3")
+    print(f"  - 总采样点数: {len(x_coords)}")
+    print(f"  - X范围: [{beam_stats['x_range'][0]:.3f}, {beam_stats['x_range'][1]:.3f}]")
+    print(f"  - Y范围: [{beam_stats['y_range'][0]:.3f}, {beam_stats['y_range'][1]:.3f}]")
+    print(f"  - Z范围: [{beam_stats['z_range'][0]:.3f}, {beam_stats['z_range'][1]:.3f}]")
+    print("=== 退出: 几何计算阶段完成 ===\n")
+    # exit(0)  # 注释掉，让程序继续执行
+
+    # 步骤3: 插值计算
+    print("开始插值计算...")
     
-    # 🔧 关键修复: 在求和前保存原始插值结果用于调试
-    original_sampled_values = sampled_values.clone()
+    # 提取坐标网格
+    grid_xyz = beam_grid['grid_xyz']  # (n_det_v, n_det_t, n_beam, 3)
+    n_det_v, n_det_t, n_beam, _ = grid_xyz.shape
     
-    # 添加采样值到调试信息
-    debug_info['sampled_values_shape'] = sampled_values.shape
-    debug_info['sampled_values_range'] = [sampled_values.min().item(), sampled_values.max().item()]
-    debug_info['sampled_values_nonzero'] = (sampled_values != 0).sum().item()
+    # 提取坐标
+    R_coords = grid_xyz[:,:,:,0].flatten()  # X坐标
+    Z_coords = grid_xyz[:,:,:,1].flatten()  # Y坐标  
+    PHI_coords = grid_xyz[:,:,:,2].flatten()  # Z坐标
     
+    # 调用插值函数
+    from .interpolation import probe_local_trilinear
+    
+    # 执行插值
+    print("执行3D插值...")
+    interpolated_values = probe_local_trilinear(
+        density_3d,
+        R_coords, Z_coords, PHI_coords,
+        config
+    )
+    
+    # 步骤4: 重塑为原始形状并进行线积分
+    print("重塑数据并执行线积分...")
+    
+    # 重塑为 (n_det_v, n_det_t, n_beam)
+    pout1 = interpolated_values.reshape(n_det_v, n_det_t, n_beam)
+    
+    # 线积分：沿光束方向求和
+    pout2 = torch.sum(pout1, dim=2)  # (n_det_v, n_det_t)
+    
+    # 如果需要返回线积分数据而不是积分结果
     if return_line_integral:
-        result = sampled_values
+        # 保存调试数据
+        debug_dir = Path("debug_output")
+        debug_dir.mkdir(exist_ok=True)
+        
+        # 保存插值结果
+        np.savetxt(debug_dir / "python_interpolation_line_integral.txt", 
+                  interpolated_values.cpu().numpy(), fmt='%.8e')
+        
+        # 保存维度信息
+        import json
+        dims_info = {
+            'n_det_v': n_det_v,
+            'n_det_t': n_det_t, 
+            'n_beam': n_beam,
+            'total_points': len(interpolated_values),
+            'return_line_integral': True
+        }
+        with open(debug_dir / "python_line_integral_dims.json", 'w') as f:
+            json.dump(dims_info, f, indent=2)
+        
+        print(f"✓ 插值线积分数据已保存: {len(interpolated_values)}个点")
+        result = pout1  # 返回3D线积分数据
+        debug_info = dims_info
     else:
-        # 步骤4: 沿光束方向积分（求和）
-        result = torch.sum(sampled_values, dim=-1)
-        # shape: (B, n_det_v, n_det_t)
+        result = pout2  # 返回2D积分图像
+        debug_info = {
+            'n_det_v': n_det_v,
+            'n_det_t': n_det_t,
+            'n_beam': n_beam,
+            'pout1_shape': list(pout1.shape),
+            'pout2_shape': list(pout2.shape)
+        }
     
-    # 移除batch维度（如果原本没有）
-    result = remove_batch_dim(result, batch_added)
+    print(f"✓ forward_projection完成: {result.shape}")
     
-    # 修正检测器阵列索引排列以匹配MATLAB
-    # 根据索引映射分析，使用最佳映射方案
-    if result.dim() == 2:  # (n_det_v, n_det_t)
-        # 🔧 优化索引重排: 基于位置对比进行更精确的映射
-        # Python当前最大值位置: (3,0) → MATLAB目标位置: (4,2)
-        # Python当前最小值位置: (8,0) → MATLAB目标位置: (4,3)
-        
-        original_result = result.clone()
-        result = torch.zeros_like(original_result)
-        
-        # 尝试更精确的2D索引映射
-        # 基于MATLAB最大值的(4,2)位置和Python当前(3,0)位置
-        # 推断需要的映射: (3,0) -> (4,2), (8,0) -> (4,3)
-        
-        # 行映射
-        row_mapping = [4, 5, 6, 7, 0, 1, 2, 3, 8]  # 更精确的行索引
-        col_mapping = [2, 0, 1, 3, 4, 5, 6]  # 列索引调整
-        
-        # 应用索引重排 - 移除硬编码的符号修正
-        for i in range(original_result.shape[0]):
-            for j in range(original_result.shape[1]):
-                if i < len(row_mapping) and j < len(col_mapping):
-                    result[i, j] = original_result[row_mapping[i], col_mapping[j]]
-        
-        # 移除硬编码的符号翻转，恢复为正常值
-        # result = -result  # 注释掉硬编码的符号修正
-        
-        print(f"DEBUG: 应用索引重排，形状: {result.shape}")
-    
-    # 🔧 添加调试信息返回
-    if return_debug_info:
-        debug_info = {}
-        if 'original_sampled_values' in locals():
-            debug_info['sampled_values_array'] = original_sampled_values.cpu().numpy()
-        if 'result' in locals():
-            debug_info['final_result'] = result.cpu().numpy()
-        return result, debug_info
-    else:
-        return result
+    return result, debug_info
 
 
 def forward_projection_with_preprocessing(
@@ -251,7 +281,7 @@ def forward_projection_with_preprocessing(
         mean_density = None
     
     # 正向投影
-    pci_image = forward_projection(
+    pci_result, metadata = forward_projection(
         density_fluctuation,
         config,
         beam_config,
@@ -260,21 +290,21 @@ def forward_projection_with_preprocessing(
     
     # 后处理：归一化
     if normalize:
-        pci_min = pci_image.min()
-        pci_max = pci_image.max()
+        pci_min = pci_result.min()
+        pci_max = pci_result.max()
         if pci_max > pci_min:
-            pci_image = (pci_image - pci_min) / (pci_max - pci_min)
+            pci_result = (pci_result - pci_min) / (pci_max - pci_min)
     
     # 收集元数据
     metadata = {
         'mean_density': mean_density,
-        'pci_min': pci_image.min().item(),
-        'pci_max': pci_image.max().item(),
-        'pci_mean': pci_image.mean().item(),
-        'pci_std': pci_image.std().item(),
+        'pci_min': pci_result.min().item(),
+        'pci_max': pci_result.max().item(),
+        'pci_mean': pci_result.mean().item(),
+        'pci_std': pci_result.std().item(),
     }
     
-    return pci_image, metadata
+    return pci_result, metadata
 
 
 def batch_forward_projection(

@@ -1,7 +1,6 @@
 {
   "input": {
-    "root_dir": "/work/DTMP/lhqing/PCI/Data/matlab_input",
-    "data_n_dir": "301",
+    "root_dir": "/work/DTMP/lhqing/PCI/Data/python_input",
     "parameters_file": "parameters.dat",
     "torus_data_file": "TORUSIons_act.dat",
     "beam_config_file": "LS_condition_JT60SA.txt",

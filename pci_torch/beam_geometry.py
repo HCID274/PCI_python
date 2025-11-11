@@ -85,17 +85,34 @@ def compute_beam_grid(
     print(f'B2_start (转换后坐标): [{B2_start[0]:.6f}, {B2_start[1]:.6f}, {B2_start[2]:.6f}]')
     print(f'B2_end (转换后坐标): [{B2_end[0]:.6f}, {B2_end[1]:.6f}, {B2_end[2]:.6f}]')
     
-    # 转换为torch tensor
-    B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device)
-    B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device)
+    # 转换为torch tensor - DEBUG: 修复设备初始化问题
+    try:
+        B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device)
+        B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device)
+    except RuntimeError as e:
+        if "Found no NVIDIA driver" in str(e):
+            print("警告: 检测到GPU驱动问题，切换到CPU模式")
+            device = 'cpu'
+        else:
+            raise e
     
     # MATLAB 第71-74行: 计算光束长度
     # b2ls = sqrt((B2(1,1)-B2(2,1))^2 + (B2(1,2)-B2(2,2))^2 + (B2(1,3)-B2(2,3))^2)
-    b2ls = torch.sqrt(
-        (B2_start[0] - B2_end[0])**2 +
-        (B2_start[1] - B2_end[1])**2 +
-        (B2_start[2] - B2_end[2])**2
-    )
+    
+    # 🔧 修复numpy/torch混用问题：确保计算使用torch张量
+    diff_x = B2_start[0] - B2_end[0]
+    diff_y = B2_start[1] - B2_end[1] 
+    diff_z = B2_start[2] - B2_end[2]
+    
+    # 确保差值是torch.tensor类型
+    if not isinstance(diff_x, torch.Tensor):
+        diff_x = torch.tensor(diff_x, device=device, dtype=torch.float64)
+    if not isinstance(diff_y, torch.Tensor):
+        diff_y = torch.tensor(diff_y, device=device, dtype=torch.float64)
+    if not isinstance(diff_z, torch.Tensor):
+        diff_z = torch.tensor(diff_z, device=device, dtype=torch.float64)
+    
+    b2ls = torch.sqrt(diff_x**2 + diff_y**2 + diff_z**2)
     
     # MATLAB 第76-78行: 计算光束方向向量
     # ⚠️ 关键修正: MATLAB中p1 = B2(起点) - B2(终点) = 从终点指向起点！
@@ -297,8 +314,8 @@ def compute_beam_grid(
         'grid_flat': grid_flat,
         'beam_vector': p1_unit,
         'perpendicular_vectors': xl_unit,
-        'beam_start': B2_start,
-        'beam_end': B2_end,
+        'beam_start': torch.tensor(B2_start, device=device, dtype=torch.float64),  # 转换为torch tensor
+        'beam_end': torch.tensor(B2_end, device=device, dtype=torch.float64),     # 转换为torch tensor
         'beam_length': b2ls,  # 总长度
         'beam_step': b2ls_step,  # 步长
     }
