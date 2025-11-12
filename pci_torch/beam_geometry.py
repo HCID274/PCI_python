@@ -49,13 +49,13 @@ def compute_beam_grid(
     # ✅ 修正: BeamConfig中已经是米单位，不需要再除以1000
     B1_start = np.array([
         beam_config.injection_point[0],  # R [m] (已经是转换后的)
-        beam_config.injection_point[1],  # Z [m] (已经是转换后的)
-        beam_config.injection_point[2]   # phi [0-1] (无单位转换)
+        beam_config.injection_point[2],  # phi [0-1] (修正: 应该是phi)
+        beam_config.injection_point[1]   # Z [m] (修正: 应该是Z)
     ])
     B1_end = np.array([
         beam_config.detection_point[0],   # R [m] (已经是转换后的)
-        beam_config.detection_point[1],   # Z [m] (已经是转换后的)
-        beam_config.detection_point[2]    # phi [0-1] (无单位转换)
+        beam_config.detection_point[2],   # phi [0-1] (修正: 应该是phi)
+        beam_config.detection_point[1]    # Z [m] (修正: 应该是Z)
     ])
     
     # ==============================================================================
@@ -65,30 +65,34 @@ def compute_beam_grid(
     print(f'B1_start (原始坐标m): [{B1_start[0]:.6f}, {B1_start[1]:.6f}, {B1_start[2]:.6f}]')
     print(f'B1_end (原始坐标m): [{B1_end[0]:.6f}, {B1_end[1]:.6f}, {B1_end[2]:.6f}]')
     
-    # B2(:,1) = B1(:,1).*cos(2*pi*B1(:,3)) - X坐标
-    # B2(:,2) = B1(:,1).*sin(2*pi*B1(:,3)) - Y坐标  
-    # B2(:,3) = B1(:,2) - Z坐标
+    # B2(:,1) = B1(:,1).*cos(2*pi*B1(:,2)) - X坐标 (R * cos(2π * phi))
+    # B2(:,2) = B1(:,1).*sin(2*pi*B1(:,2)) - Y坐标 (R * sin(2π * phi))  
+    # B2(:,3) = B1(:,3) - Z坐标
     # ✅ 修正: B1已经是m单位，但仍需要保持与MATLAB一致的逻辑
     # 关键修正: B2_start应该是注入点，B2_end应该是检测点
     B2_start = np.array([
-        B1_start[0] * np.cos(2 * np.pi * B1_start[2]),  # 注入点的笛卡尔坐标
-        B1_start[0] * np.sin(2 * np.pi * B1_start[2]),
-        B1_start[1]
+        B1_start[0] * np.cos(2 * np.pi * B1_start[1]),  # 注入点的笛卡尔坐标 (R * cos(2π * phi))
+        B1_start[0] * np.sin(2 * np.pi * B1_start[1]),
+        B1_start[2]  # Z坐标
     ])
     
     B2_end = np.array([
-        B1_end[0] * np.cos(2 * np.pi * B1_end[2]),     # 检测点的笛卡尔坐标
-        B1_end[0] * np.sin(2 * np.pi * B1_end[2]),
-        B1_end[1]
+        B1_end[0] * np.cos(2 * np.pi * B1_end[1]),     # 检测点的笛卡尔坐标 (R * cos(2π * phi))
+        B1_end[0] * np.sin(2 * np.pi * B1_end[1]),
+        B1_end[2]  # Z坐标
     ])
+    
+    # 注意: Python中已经在data_loader.py中处理了毫米到米的转换
+    # injection_point = (coords[0] / 1000.0, coords[1] / 1000.0, coords[2])
+    # 因此B1_start已经是米单位，不需要再除以1000
     
     print(f'B2_start (转换后坐标): [{B2_start[0]:.6f}, {B2_start[1]:.6f}, {B2_start[2]:.6f}]')
     print(f'B2_end (转换后坐标): [{B2_end[0]:.6f}, {B2_end[1]:.6f}, {B2_end[2]:.6f}]')
     
     # 转换为torch tensor - DEBUG: 修复设备初始化问题
     try:
-        B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device)
-        B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device)
+        B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device).detach().clone()
+        B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device).detach().clone()
     except RuntimeError as e:
         if "Found no NVIDIA driver" in str(e):
             print("警告: 检测到GPU驱动问题，切换到CPU模式")
@@ -106,11 +110,11 @@ def compute_beam_grid(
     
     # 确保差值是torch.tensor类型
     if not isinstance(diff_x, torch.Tensor):
-        diff_x = torch.tensor(diff_x, device=device, dtype=torch.float64)
+        diff_x = torch.tensor(diff_x, device=device, dtype=torch.float64).detach().clone()
     if not isinstance(diff_y, torch.Tensor):
-        diff_y = torch.tensor(diff_y, device=device, dtype=torch.float64)
+        diff_y = torch.tensor(diff_y, device=device, dtype=torch.float64).detach().clone()
     if not isinstance(diff_z, torch.Tensor):
-        diff_z = torch.tensor(diff_z, device=device, dtype=torch.float64)
+        diff_z = torch.tensor(diff_z, device=device, dtype=torch.float64).detach().clone()
     
     b2ls = torch.sqrt(diff_x**2 + diff_y**2 + diff_z**2)
     
@@ -162,7 +166,7 @@ def compute_beam_grid(
         print(f'  一般光束情况')
         phi_rad = 2 * np.pi * phi_raw
         tan_phi = np.tan(phi_rad)
-        tan_phi_t = torch.tensor(tan_phi, dtype=torch.float64, device=device)
+        tan_phi_t = torch.tensor(tan_phi, dtype=torch.float64, device=device).detach().clone()
         
         # 第一个垂直向量（MATLAB第88-94行）
         xl[0, 0] = p1[2]
@@ -314,8 +318,8 @@ def compute_beam_grid(
         'grid_flat': grid_flat,
         'beam_vector': p1_unit,
         'perpendicular_vectors': xl_unit,
-        'beam_start': torch.tensor(B2_start, device=device, dtype=torch.float64),  # 转换为torch tensor
-        'beam_end': torch.tensor(B2_end, device=device, dtype=torch.float64),     # 转换为torch tensor
+        'beam_start': torch.tensor(B2_start, device=device, dtype=torch.float64).detach().clone(),  # 转换为torch tensor
+        'beam_end': torch.tensor(B2_end, device=device, dtype=torch.float64).detach().clone(),     # 转换为torch tensor
         'beam_length': b2ls,  # 总长度
         'beam_step': b2ls_step,  # 步长
     }
@@ -395,10 +399,10 @@ def get_detector_positions(
     
     # 生成 x 坐标（对应 MATLAB 的第一个参数）
     x_coords = torch.tensor([wid1/2.0 * (i - div1) / div1 for i in range(2*div1+1)], 
-                            dtype=torch.float64, device=device)
+                            dtype=torch.float64, device=device).detach().clone()
     # 生成 y 坐标（对应 MATLAB 的第二个参数，注意负号）
     y_coords = torch.tensor([-wid2/2.0 * (i - div2) / div2 for i in range(2*div2+1)], 
-                           dtype=torch.float64, device=device)
+                            dtype=torch.float64, device=device).detach().clone()
     
     # MATLAB 的 meshgrid: [xx1, yy1] = meshgrid(x, y)
     # 其中 x 是列向量，y 是行向量

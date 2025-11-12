@@ -20,6 +20,8 @@ from pci_torch.forward_model import forward_projection
 from pci_torch.visualization import PCIVisualizer
 import matplotlib.pyplot as plt
 import torch
+import numpy as np
+
 
 def load_config(config_file: str = None) -> Dict[str, Any]:
     """加载配置文件"""
@@ -114,6 +116,43 @@ def run_single_time(config: Dict[str, Any], device: str = None):
             'data_n': task_config['data_n'],
             'device': device
         }
+        
+        # 添加MATLAB兼容的变量名
+        pci_np = pci_result.cpu().numpy()
+        
+        # 确保numpy在作用域内可用
+        import numpy as np
+        # pout: 沿光束路径的1D信号（取中心检测器位置的平均）
+        center_v = pci_np.shape[0] // 2  # 垂直中心
+        center_t = pci_np.shape[1] // 2  # 环向中心
+        pout = pci_np[center_v, center_t, :].flatten()  # 1D信号对应MATLAB的plot(abs(pout))
+        debug_data['pout'] = pout
+        
+        # pout2: 2D检测器信号（取光束中点）
+        # 修复：不要只取中间点，可能该点数据为0
+        center_beam = pci_np.shape[2] // 2
+        
+        # 尝试多个时间点，看哪个有有效数据
+        candidate_points = [center_beam, center_beam//2, center_beam*3//2, 0, pci_np.shape[2]-1]
+        pout2 = None
+        
+        for pt in candidate_points:
+            if pt < pci_np.shape[2]:
+                temp_pout2 = pci_np[:, :, pt]
+                if np.any(np.abs(temp_pout2) > 1e-6):  # 检查是否有非零数据
+                    pout2 = temp_pout2
+                    break
+        
+        # 如果所有候选点都是0，取所有时间点的平均
+        if pout2 is None or np.all(np.abs(pout2) < 1e-6):
+            pout2 = np.mean(pci_np, axis=2)  # 沿光束路径取平均
+            # 如果平均还是0，取最大值时间点
+            if np.all(np.abs(pout2) < 1e-6):
+                max_indices = np.unravel_index(np.argmax(np.abs(pci_np), axis=None), pci_np.shape)
+                pout2 = pci_np[:, :, max_indices[2]]
+        else:
+            pout2 = pout2
+        debug_data['pout2'] = pout2
         
         # 如果有中间结果，也保存
         if 'debug_info' in locals():
@@ -305,6 +344,16 @@ def main():
     try:
         # 加载配置
         config = load_config(args.config)
+        
+        # 智能设备检测
+        if args.device == 'cuda':
+            import torch
+            if torch.cuda.is_available():
+                print(f"  检测到可用GPU: {torch.cuda.get_device_name(0)}")
+                print(f"  GPU架构: {torch.version.hip if hasattr(torch.version, 'hip') else 'CUDA'}")
+            else:
+                print("  警告: 指定了GPU但系统无可用GPU，回退到CPU")
+                args.device = 'cpu'
         
         # 覆盖配置参数
         if args.task:
