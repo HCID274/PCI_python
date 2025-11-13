@@ -297,11 +297,11 @@ def probe_local_trilinear_vectorized(
     
     # 确保输入是tensor
     if not isinstance(R, torch.Tensor):
-        R = torch.tensor(R, device=density_3d.device, dtype=torch.float64).detach().clone()
+        R = torch.as_tensor(R, device=density_3d.device, dtype=torch.float64).clone()
     if not isinstance(Z, torch.Tensor):
-        Z = torch.tensor(Z, device=density_3d.device, dtype=torch.float64).detach().clone()
+        Z = torch.as_tensor(Z, device=density_3d.device, dtype=torch.float64).clone()
     if not isinstance(PHI, torch.Tensor):
-        PHI = torch.tensor(PHI, device=density_3d.device, dtype=torch.float64).detach().clone()
+        PHI = torch.as_tensor(PHI, device=density_3d.device, dtype=torch.float64).clone()
     
     # 展平为1D
     original_shape = R.shape
@@ -315,7 +315,7 @@ def probe_local_trilinear_vectorized(
         return torch.zeros(original_shape, device=density_3d.device, dtype=density_3d.dtype)
     
     # 坐标转换：计算(r, theta)
-    PA_tensor = torch.tensor(config.PA, device=R.device, dtype=R.dtype).detach().clone()
+    PA_tensor = config.PA.to(device=R.device, dtype=R.dtype).clone()
     dR = R_flat - PA_tensor[0]
     dZ = Z_flat - PA_tensor[1]
     
@@ -404,11 +404,11 @@ def probe_local_trilinear(
     
     # 确保输入是tensor
     if not isinstance(R, torch.Tensor):
-        R = torch.tensor(R, device=density_3d.device, dtype=torch.float64).detach().clone()
+        R = torch.as_tensor(R, device=density_3d.device, dtype=torch.float64).clone()
     if not isinstance(Z, torch.Tensor):
-        Z = torch.tensor(Z, device=density_3d.device, dtype=torch.float64).detach().clone()
+        Z = torch.as_tensor(Z, device=density_3d.device, dtype=torch.float64).clone()
     if not isinstance(PHI, torch.Tensor):
-        PHI = torch.tensor(PHI, device=density_3d.device, dtype=torch.float64).detach().clone()
+        PHI = torch.as_tensor(PHI, device=density_3d.device, dtype=torch.float64).clone()
     
     # 展平为1D
     original_shape = R.shape
@@ -438,7 +438,7 @@ def probe_local_trilinear(
     # 🔧 数值精度微调3: 坐标转换精度优化
     # 使用更高的精度进行坐标计算
     # 确保PA是torch.Tensor类型
-    PA_tensor = torch.tensor(PA, device=R.device, dtype=R.dtype).detach().clone()
+    PA_tensor = PA.to(device=R.device, dtype=R.dtype).clone()
     dR = R_flat - PA_tensor[0]  # R - R_axis
     dZ = Z_flat - PA_tensor[1]  # Z - Z_axis
     

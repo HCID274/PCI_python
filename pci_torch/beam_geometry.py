@@ -91,14 +91,14 @@ def compute_beam_grid(
     
     # 转换为torch tensor - DEBUG: 修复设备初始化问题
     try:
-        B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device).detach().clone()
-        B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device).detach().clone()
+        B2_start = torch.as_tensor(B2_start, dtype=torch.float64, device=device).clone()
+        B2_end = torch.as_tensor(B2_end, dtype=torch.float64, device=device).clone()
     except RuntimeError as e:
         if "Found no NVIDIA driver" in str(e) or "HIP" in str(e):
             print("警告: 检测到GPU驱动问题，切换到CPU模式")
             device = 'cpu'
-            B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device).detach().clone()
-            B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device).detach().clone()
+            B2_start = torch.as_tensor(B2_start, dtype=torch.float64, device=device).clone()
+            B2_end = torch.as_tensor(B2_end, dtype=torch.float64, device=device).clone()
     
     # MATLAB 第71-74行: 计算光束长度
     # b2ls = sqrt((B2(1,1)-B2(2,1))^2 + (B2(1,2)-B2(2,2))^2 + (B2(1,3)-B2(2,3))^2)
@@ -110,11 +110,11 @@ def compute_beam_grid(
     
     # 确保差值是torch.tensor类型
     if not isinstance(diff_x, torch.Tensor):
-        diff_x = torch.tensor(diff_x, device=device, dtype=torch.float64).detach().clone()
+        diff_x = torch.as_tensor(diff_x, device=device, dtype=torch.float64).clone()
     if not isinstance(diff_y, torch.Tensor):
-        diff_y = torch.tensor(diff_y, device=device, dtype=torch.float64).detach().clone()
+        diff_y = torch.as_tensor(diff_y, device=device, dtype=torch.float64).clone()
     if not isinstance(diff_z, torch.Tensor):
-        diff_z = torch.tensor(diff_z, device=device, dtype=torch.float64).detach().clone()
+        diff_z = torch.as_tensor(diff_z, device=device, dtype=torch.float64).clone()
     
     b2ls = torch.sqrt(diff_x**2 + diff_y**2 + diff_z**2)
     
@@ -166,7 +166,7 @@ def compute_beam_grid(
         print(f'  一般光束情况')
         phi_rad = 2 * np.pi * phi_raw
         tan_phi = np.tan(phi_rad)
-        tan_phi_t = torch.tensor(tan_phi, dtype=torch.float64, device=device).detach().clone()
+        tan_phi_t = torch.as_tensor(tan_phi, dtype=torch.float64, device=device).clone()
         
         # 第一个垂直向量（MATLAB第88-94行）
         xl[0, 0] = p1[2]
@@ -318,8 +318,8 @@ def compute_beam_grid(
         'grid_flat': grid_flat,
         'beam_vector': p1_unit,
         'perpendicular_vectors': xl_unit,
-        'beam_start': torch.tensor(B2_start, device=device, dtype=torch.float64).detach().clone(),  # 转换为torch tensor
-        'beam_end': torch.tensor(B2_end, device=device, dtype=torch.float64).detach().clone(),     # 转换为torch tensor
+        'beam_start': B2_start.to(device=device, dtype=torch.float64).clone(),  # 已经是tensor，使用.to()方法
+        'beam_end': B2_end.to(device=device, dtype=torch.float64).clone(),     # 已经是tensor，使用.to()方法
         'beam_length': b2ls,  # 总长度
         'beam_step': b2ls_step,  # 步长
     }
