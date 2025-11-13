@@ -497,7 +497,7 @@ def load_gene_data(
     final_data = data_3d
     
     # 转换为PyTorch张量
-    tensor = to_tensor(final_data, device=device, dtype=torch.float64)
+    tensor = to_tensor(final_data, device=device)
     
     return tensor
 
@@ -1164,7 +1164,7 @@ def fread_data_1(
     binary_file: str,
     m: int,
     n: int,
-    device: str = 'cpu'
+    device: str = 'hip'
 ) -> torch.Tensor:
     """
     读取单模态数据（严格对应MATLAB的fread_data_1.m）
@@ -1306,7 +1306,7 @@ def fread_data_s(
     print(f"  数据均值: {data3d.mean():.3f}")
     
     # 转换为PyTorch张量
-    tensor = to_tensor(data3d, device=device, dtype=torch.float64)
+    tensor = to_tensor(data3d, device=device)
     
     return tensor
 

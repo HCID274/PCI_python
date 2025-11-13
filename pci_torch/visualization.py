@@ -810,7 +810,7 @@ class PCIVisualizer:
         print(f"  模态配置: KYM={KYM}, KZM={KZM}, LYM2={n_poloidal}, LZM2={n_toroidal}")
         
         p2 = torch.zeros((n_radial, n_poloidal, n_toroidal, n_fields), 
-                        dtype=torch.complex64, device='cpu')
+                        dtype=torch.complex64, device='cuda')
         
         # 生成一些模拟的模态数据
         for i in range(n_fields):

@@ -78,7 +78,7 @@ def test_load_gene_config():
     if not sample_file.exists():
         pytest.skip(f"测试文件不存在: {sample_file}")
     
-    config = load_gene_config(str(sample_file), device='cpu')
+    config = load_gene_config(str(sample_file), device='cuda')
     
     # 检查加载的参数
     assert config.nx0 == 128

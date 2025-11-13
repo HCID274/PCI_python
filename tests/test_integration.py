@@ -42,7 +42,7 @@ def sample_beam_config():
 
 def test_forward_projection_shape(sample_config, sample_beam_config):
     """测试正向投影输出形状"""
-    device = 'cpu'
+    device = 'cuda'
     
     # 创建测试密度场
     density_3d = torch.randn(400, sample_config.nx0, sample_config.nz0, device=device)
@@ -65,7 +65,7 @@ def test_forward_projection_shape(sample_config, sample_beam_config):
 
 def test_forward_projection_batch(sample_config, sample_beam_config):
     """测试批处理模式"""
-    device = 'cpu'
+    device = 'cuda'
     batch_size = 4
     
     # 创建批量密度场
@@ -93,7 +93,7 @@ def test_forward_projection_batch(sample_config, sample_beam_config):
 
 def test_forward_projection_differentiable(sample_config, sample_beam_config):
     """测试可微分性"""
-    device = 'cpu'
+    device = 'cuda'
     
     # 创建需要梯度的密度场
     density_3d = torch.randn(
@@ -121,7 +121,7 @@ def test_forward_projection_differentiable(sample_config, sample_beam_config):
 
 def test_forward_projection_consistency(sample_config, sample_beam_config):
     """测试输出一致性"""
-    device = 'cpu'
+    device = 'cuda'
     
     # 创建相同的密度场
     torch.manual_seed(42)
@@ -136,7 +136,7 @@ def test_forward_projection_consistency(sample_config, sample_beam_config):
 
 def test_forward_projection_linearity(sample_config, sample_beam_config):
     """测试线性性质"""
-    device = 'cpu'
+    device = 'cuda'
     
     # 创建两个密度场
     density1 = torch.randn(400, sample_config.nx0, sample_config.nz0, device=device)
@@ -153,7 +153,7 @@ def test_forward_projection_linearity(sample_config, sample_beam_config):
     assert torch.allclose(pci_sum, pci1 + pci2, rtol=1e-4, atol=1e-6)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要GPU")
 def test_forward_projection_gpu(sample_config, sample_beam_config):
     """测试GPU执行"""
     device = 'cuda'
@@ -194,7 +194,7 @@ def test_full_pipeline_with_real_files():
     if not parameters_file.exists() or not ls_condition_file.exists():
         pytest.skip("测试文件不存在")
     
-    device = 'cpu'
+    device = 'cuda'
     
     # 加载配置
     config = load_gene_config(str(parameters_file), device=device)

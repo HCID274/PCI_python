@@ -19,7 +19,7 @@ python test_single_time.py \
     --input_dir /work/DTMP/lhqing/PCI/Data/sample/input \
     --output_dir /work/DTMP/lhqing/PCI/Data/sample/output/test_single \
     --time_t 0.83 \
-    --device cpu
+    --device hip
 
 echo ""
 echo "测试完成！查看结果："

@@ -346,13 +346,17 @@ def main():
         config = load_config(args.config)
         
         # 智能设备检测
-        if args.device == 'cuda':
+        if args.device in ['cuda']:
             import torch
             if torch.cuda.is_available():
-                print(f"  检测到可用GPU: {torch.cuda.get_device_name(0)}")
-                print(f"  GPU架构: {torch.version.hip if hasattr(torch.version, 'hip') else 'CUDA'}")
+                if hasattr(torch.version, 'hip'):
+                    print(f"  检测到可用AMD GPU (ROCM): {torch.cuda.get_device_name(0)}")
+                    print(f"  ROCm版本: {torch.version.hip}")
+                elif args.device == 'cuda':
+                    print(f"  检测到可用NVIDIA GPU: {torch.cuda.get_device_name(0)}")
+                    print(f"  CUDA版本: {torch.version.cuda}")
             else:
-                print("  警告: 指定了GPU但系统无可用GPU，回退到CPU")
+                print(f"  警告: 指定了{args.device}但系统无可用GPU，回退到CPU")
                 args.device = 'cpu'
         
         # 覆盖配置参数

@@ -6,23 +6,41 @@ import torch
 import numpy as np
 from typing import Union, Tuple
 
-
 def to_tensor(
     data: Union[np.ndarray, torch.Tensor],
     device: str = 'cuda',
     dtype: torch.dtype = torch.float64
 ) -> torch.Tensor:
-    """将数据转换为PyTorch张量"""
-    if isinstance(data, torch.Tensor):
-        return data.to(device=device, dtype=dtype)
+    """将数据转换为PyTorch张量
     
+    ROCm兼容方案：使用'cuda'作为设备名称
+    ROCm PyTorch使用'cuda'作为设备接口
+    """
+    # ROCm设备名称统一使用'cuda'
+    if isinstance(data, torch.Tensor):
+        # 如果已经是tensor，确保类型和设备正确
+        target_device = device if ':' in device else f'{device}:0'
+        if data.dtype == dtype and data.device.type == device.split(':')[0]:
+            return data
+        # 需要转换
+        return data.to(dtype=dtype, device=device)
+    
+    # 对于numpy数组：确保是float64类型和正确的字节序
+    if data.dtype != np.float64:
+        data = data.astype(np.float64)
+
     # 处理字节序问题
-    if hasattr(data, 'dtype') and data.dtype.byteorder not in ('=', '|'):
-        # 数据不是本机字节序，需要转换
+    if data.dtype.byteorder not in ('=', '|'):
         data = data.astype(data.dtype.newbyteorder('='))
     
-    return torch.from_numpy(data).to(device=device, dtype=dtype)
-
+    # 先创建CPU张量，然后转移到GPU
+    cpu_tensor = torch.from_numpy(data)
+    
+    if device != 'cpu':
+        # 使用.to()转移到GPU
+        return cpu_tensor.to(device=device, dtype=dtype)
+    else:
+        return cpu_tensor
 
 def ensure_batch_dim(x: torch.Tensor) -> Tuple[torch.Tensor, bool]:
     """

@@ -22,7 +22,7 @@
     "auto_detect_times": true
   },
   "execution": {
-    "device": "cpu",
+    "device": "cuda",
     "verbose": true,
     "save_detailed_results": true,
     "save_matlab_compatible": true

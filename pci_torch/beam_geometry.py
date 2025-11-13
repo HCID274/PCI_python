@@ -94,11 +94,11 @@ def compute_beam_grid(
         B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device).detach().clone()
         B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device).detach().clone()
     except RuntimeError as e:
-        if "Found no NVIDIA driver" in str(e):
+        if "Found no NVIDIA driver" in str(e) or "HIP" in str(e):
             print("警告: 检测到GPU驱动问题，切换到CPU模式")
             device = 'cpu'
-        else:
-            raise e
+            B2_start = torch.tensor(B2_start, dtype=torch.float64, device=device).detach().clone()
+            B2_end = torch.tensor(B2_end, dtype=torch.float64, device=device).detach().clone()
     
     # MATLAB 第71-74行: 计算光束长度
     # b2ls = sqrt((B2(1,1)-B2(2,1))^2 + (B2(1,2)-B2(2,2))^2 + (B2(1,3)-B2(2,3))^2)

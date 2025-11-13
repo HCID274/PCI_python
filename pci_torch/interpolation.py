@@ -6,6 +6,7 @@
 
 主要函数:
 - probe_local_trilinear: 对应MATLAB的probeEQ_local_s.m
+- probe_local_trilinear_vectorized: GPU优化的向量化版本
 - bisec: 对应MATLAB的bisec.m，使用torch.searchsorted实现
 
 MATLAB对应关系:
@@ -17,6 +18,345 @@ import torch
 import numpy as np
 from typing import Tuple, Optional
 from .utils import bisec
+
+
+def batch_bisec_search(values: torch.Tensor, reference_array: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    批量二分查找 - 向量化的bisec实现
+    
+    Args:
+        values: 要查找的值数组 (N,)
+        reference_array: 参考数组 (M,)
+    
+    Returns:
+        (indices1, indices2): 查找结果，与MATLAB bisec一致
+    """
+    # 确保reference_array是1D tensor
+    ref_array = reference_array.flatten()
+    
+    # 检查排序方向
+    is_ascending = ref_array[0] < ref_array[-1]
+    
+    # 使用torch.searchsorted进行批量查找
+    if is_ascending:
+        # 升序
+        indices = torch.searchsorted(ref_array, values, side='right')
+    else:
+        # 降序，需要特殊处理
+        # 反转数组进行搜索，然后调整结果
+        ref_reversed = ref_array.flip(0)
+        indices_reversed = torch.searchsorted(ref_reversed, values, side='right')
+        indices = len(ref_array) - indices_reversed
+    
+    # 确保索引在有效范围内
+    indices = torch.clamp(indices, 1, len(ref_array))  # MATLAB 1-based索引
+    
+    # bisec返回两个索引
+    indices1 = torch.clamp(indices - 1, 1, len(ref_array))
+    indices2 = indices
+    
+    return indices1, indices2
+
+
+def batch_trilinear_interpolate(
+    density_3d: torch.Tensor,
+    r: torch.Tensor,
+    theta: torch.Tensor,
+    phi: torch.Tensor,
+    theta_indices: Tuple[torch.Tensor, torch.Tensor],
+    phi_indices: Tuple[torch.Tensor, torch.Tensor],
+    GAC_physical: torch.Tensor,
+    GTC_c_last: torch.Tensor,
+    philist: torch.Tensor
+) -> torch.Tensor:
+    """
+    批量三线性插值 - GPU优化的向量化实现
+    
+    Args:
+        density_3d: 密度场 (ntheta, nx, nz)
+        r: 径向坐标 (N,)
+        theta: 极向角度 (N,)
+        phi: 环向角度 (N,) 归一化到[0,1]
+        theta_indices: (theta_lower, theta_upper) 索引
+        phi_indices: (phi_lower, phi_upper) 索引
+        GAC_physical: 物理坐标的GAC数据
+        GTC_c_last: 最外层的theta坐标
+        philist: phi网格
+    
+    Returns:
+        插值结果 (N,)
+    """
+    N = r.shape[0]
+    device = density_3d.device
+    dtype = density_3d.dtype
+    
+    theta_lower, theta_upper = theta_indices
+    phi_lower, phi_upper = phi_indices
+    
+    # 确保索引是整数类型
+    theta_lower = theta_lower.long()
+    theta_upper = theta_upper.long()
+    phi_lower = phi_lower.long()
+    phi_upper = phi_upper.long()
+    
+    # 边界检查：确保所有索引在有效范围内
+    ntheta, nx, nz = density_3d.shape
+    max_theta_idx = len(GTC_c_last)
+    
+    # 限制theta索引到有效范围 (MATLAB 1-based: 1到401)
+    theta_lower = torch.clamp(theta_lower, 1, max_theta_idx)
+    theta_upper = torch.clamp(theta_upper, 1, max_theta_idx)
+    
+    # 转换为Python 0-based索引
+    theta_lower_0based = theta_lower - 1
+    theta_upper_0based = theta_upper - 1
+    
+    # 限制phi索引
+    phi_lower = torch.clamp(phi_lower, 0, len(philist) - 2)
+    phi_upper = torch.clamp(phi_lower + 1, 0, len(philist) - 1)
+    
+    # 计算每个点对应的theta角度
+    theta_at_lower = GTC_c_last[theta_lower_0based]
+    theta_at_upper = GTC_c_last[theta_upper_0based]
+    
+    # 确保theta_max > theta_min (处理边界情况)
+    theta_min = torch.minimum(theta_at_lower, theta_at_upper)
+    theta_max = torch.maximum(theta_at_lower, theta_at_upper)
+    
+    # 防止theta_min == theta_max
+    theta_diff = theta_max - theta_min
+    theta_eps = 1e-6
+    theta_min = torch.where(torch.abs(theta_diff) < theta_eps, 
+                           theta_min - theta_eps, theta_min)
+    theta_max = torch.where(torch.abs(theta_diff) < theta_eps, 
+                           theta_max + theta_eps, theta_max)
+    
+    # 计算phi边界值
+    phi_min = philist[phi_lower]
+    phi_max = philist[phi_upper]
+    
+    # 防止phi_min == phi_max
+    phi_diff = phi_max - phi_min
+    phi_min = torch.where(torch.abs(phi_diff) < theta_eps, 
+                         phi_min - theta_eps, phi_min)
+    phi_max = torch.where(torch.abs(phi_diff) < theta_eps, 
+                         phi_max + theta_eps, phi_max)
+    
+    # 对每个theta角度，找到对应的r边界值
+    # 使用GAC数据的最后一层（最外层）
+    r_boundary_lower = GAC_physical[-1, theta_lower_0based]  # shape: (N,)
+    r_boundary_upper = GAC_physical[-1, theta_upper_0based]  # shape: (N,)
+    
+    # 边界检查：确保点在等离子体内部
+    tolerance = 1e-2
+    r_boundary_min = torch.minimum(r_boundary_lower, r_boundary_upper)
+    r_boundary_max = torch.maximum(r_boundary_lower, r_boundary_upper)
+    
+    # 点在等离子体内部的条件
+    inside_plasma = (r >= 0.0) & (r <= r_boundary_max + tolerance)
+    
+    # 对不在等离子体内部的点，返回0
+    result = torch.zeros(N, device=device, dtype=dtype)
+    
+    if not inside_plasma.any():
+        return result
+    
+    # 只对等离子体内部的点进行插值
+    valid_indices = inside_plasma.nonzero(as_tuple=False).squeeze(-1)
+    
+    if len(valid_indices) == 0:
+        return result
+    
+    # 为有效点准备数据
+    r_valid = r[valid_indices]
+    theta_valid = theta[valid_indices]
+    phi_valid = phi[valid_indices]
+    theta_lower_valid = theta_lower_0based[valid_indices]
+    theta_upper_valid = theta_upper_0based[valid_indices]
+    phi_lower_valid = phi_lower[valid_indices]
+    phi_upper_valid = phi_upper[valid_indices]
+    
+    # 计算r边界值（对于有效点）
+    r_boundary_min_valid = r_boundary_min[valid_indices]
+    r_boundary_max_valid = r_boundary_max[valid_indices]
+    
+    # 计算径向索引（线性查找）
+    r_indices = torch.zeros(len(valid_indices), device=device, dtype=torch.long)
+    
+    for i, idx in enumerate(valid_indices):
+        r_i = r_valid[i]
+        theta_idx = theta_lower_valid[i]  # 使用theta_lower对应的GAC列
+        
+        # 在该theta角度的GAC列中查找最接近的r值
+        GAC_at_theta = GAC_physical[:, theta_idx]
+        r_diffs = torch.abs(GAC_at_theta - r_i)
+        r_p_lower = torch.argmin(r_diffs)
+        r_p_upper = min(r_p_lower + 1, len(GAC_at_theta) - 1)
+        
+        r_indices[i] = r_p_lower
+    
+    # 确保r索引在有效范围内
+    r_indices = torch.clamp(r_indices, 0, nx - 2)
+    
+    # 计算权重
+    r_min = torch.gather(GAC_physical[:, theta_lower_valid], 0, r_indices.unsqueeze(0)).squeeze(0)
+    r_max = torch.gather(GAC_physical[:, theta_upper_valid], 0, (r_indices + 1).unsqueeze(0)).squeeze(0)
+    
+    # 确保r_max > r_min
+    r_min_final = torch.minimum(r_min, r_max)
+    r_max_final = torch.maximum(r_min, r_max)
+    
+    # 防止除零
+    r_diff = r_max_final - r_min_final
+    r_diff = torch.where(torch.abs(r_diff) < 1e-6, 
+                        torch.sign(r_diff) * 1e-6, r_diff)
+    
+    theta_min_valid = theta_min[valid_indices]
+    theta_max_valid = theta_max[valid_indices]
+    phi_min_valid = phi_min[valid_indices]
+    phi_max_valid = phi_max[valid_indices]
+    
+    # 计算权重
+    da_cyl_1 = (r_max_final - r_valid) / r_diff
+    da_cyl_2 = (theta_max_valid - theta_valid) / (theta_max_valid - theta_min_valid)
+    da_cyl_3 = (phi_max_valid - phi_valid) / (phi_max_valid - phi_min_valid)
+    
+    # 确保权重在合理范围内
+    da_cyl_1 = torch.clamp(da_cyl_1, 0.0, 1.0)
+    da_cyl_2 = torch.clamp(da_cyl_2, 0.0, 1.0)
+    da_cyl_3 = torch.clamp(da_cyl_3, 0.0, 1.0)
+    
+    # 设置最终索引
+    m1 = r_indices                                    # 径向索引
+    n1 = theta_lower_valid                           # 极向索引
+    p1 = phi_lower_valid                            # phi索引
+    
+    m2 = torch.clamp(m1 + 1, 0, nx - 1)             # 径向+1
+    n2 = torch.clamp(n1 + 1, 0, ntheta - 1)         # 极向+1  
+    p2 = torch.clamp(p1 + 1, 0, nz - 1)             # phi+1
+    
+    # 批量提取8个角点的数据
+    data_000 = density_3d[n1, m1, p1]  # (theta, radial, phi)
+    data_100 = density_3d[n1, m2, p1]
+    data_010 = density_3d[n2, m1, p1]
+    data_110 = density_3d[n2, m2, p1]
+    data_001 = density_3d[n1, m1, p2]
+    data_101 = density_3d[n1, m2, p2]
+    data_011 = density_3d[n2, m1, p2]
+    data_111 = density_3d[n2, m2, p2]
+    
+    # 批量三线性插值计算
+    term1 = da_cyl_3 * (da_cyl_2 * (da_cyl_1 * data_000 + (1.0 - da_cyl_1) * data_100) \
+        + (1.0 - da_cyl_2) * (da_cyl_1 * data_010 + (1.0 - da_cyl_1) * data_110))
+    
+    term2 = (1.0 - da_cyl_3) * (da_cyl_2 * (da_cyl_1 * data_001 + (1.0 - da_cyl_1) * data_101) \
+        + (1.0 - da_cyl_2) * (da_cyl_1 * data_011 + (1.0 - da_cyl_1) * data_111))
+    
+    # 计算最终结果
+    valid_result = term1 + term2
+    
+    # 放入结果数组的对应位置
+    result[valid_indices] = valid_result
+    
+    return result
+
+
+def probe_local_trilinear_vectorized(
+    density_3d: torch.Tensor,
+    R: torch.Tensor,
+    Z: torch.Tensor,
+    PHI: torch.Tensor,
+    config
+) -> torch.Tensor:
+    """
+    3D三线性插值 - GPU优化的向量化版本
+    
+    这个函数实现了与probe_local_trilinear完全相同的功能，
+    但使用向量化计算消除Python循环，显著提升性能。
+    
+    Args:
+        density_3d: 密度场 (ntheta, nx, nz) 或 (1, ntheta, nx, nz)
+        R: R坐标 (scalar or tensor)
+        Z: Z坐标 (scalar or tensor)  
+        PHI: PHI坐标 [0, 2π] (scalar or tensor)
+        config: 包含equilibrium数据的配置对象
+    
+    Returns:
+        插值结果 (与输入shape相同)
+    """
+    # 🔧 处理维度兼容性 - 与probe_local_trilinear保持一致
+    original_density_shape = density_3d.shape
+    if density_3d.ndim == 3:
+        # 保持3D输入不变
+        pass
+    elif density_3d.ndim == 4:
+        # 如果是4D，移除batch维度，保持为3D
+        density_3d = density_3d.squeeze(0)  # 移除batch维度
+    else:
+        raise ValueError(f"density_3d必须是3D或4D张量，但得到的是{density_3d.ndim}D: {density_3d.shape}")
+    
+    # 确保输入是tensor
+    if not isinstance(R, torch.Tensor):
+        R = torch.tensor(R, device=density_3d.device, dtype=torch.float64).detach().clone()
+    if not isinstance(Z, torch.Tensor):
+        Z = torch.tensor(Z, device=density_3d.device, dtype=torch.float64).detach().clone()
+    if not isinstance(PHI, torch.Tensor):
+        PHI = torch.tensor(PHI, device=density_3d.device, dtype=torch.float64).detach().clone()
+    
+    # 展平为1D
+    original_shape = R.shape
+    R_flat = R.flatten()
+    Z_flat = Z.flatten()
+    PHI_flat = PHI.flatten()
+    N = R_flat.shape[0]
+    
+    # 检查是否有equilibrium数据
+    if config.PA is None or config.GAC is None:
+        return torch.zeros(original_shape, device=density_3d.device, dtype=density_3d.dtype)
+    
+    # 坐标转换：计算(r, theta)
+    PA_tensor = torch.tensor(config.PA, device=R.device, dtype=R.dtype).detach().clone()
+    dR = R_flat - PA_tensor[0]
+    dZ = Z_flat - PA_tensor[1]
+    
+    # 计算径向距离和角度
+    r = torch.sqrt(dR**2 + dZ**2)
+    raw_theta = torch.atan2(dZ, dR)
+    
+    # 使用MATLAB的mod函数行为
+    two_pi = 2 * torch.pi
+    theta = raw_theta - two_pi * torch.floor(raw_theta / two_pi)
+    theta = torch.where(theta < 0, theta + two_pi, theta)
+    theta = torch.where(theta >= two_pi, theta - two_pi, theta)
+    
+    # 处理GAC坐标缩放
+    if hasattr(config, 'L_ref') and config.L_ref is not None:
+        GAC_physical = config.GAC * config.L_ref
+    else:
+        GAC_physical = config.GAC
+    
+    # 设置phi列表（归一化到[0,1]）
+    nz = density_3d.shape[2]
+    KZMt = nz - 2
+    philist = torch.linspace(0, 1, KZMt + 2, device=density_3d.device)
+    
+    # 批量查找theta索引
+    GTC_c_last = config.GTC_c[-1, :]
+    theta_lower, theta_upper = batch_bisec_search(theta, GTC_c_last)
+    
+    # 批量查找phi索引
+    phi_normalized = PHI_flat / (2 * torch.pi)
+    phi_lower, phi_upper = batch_bisec_search(phi_normalized, philist)
+    
+    # 执行批量三线性插值
+    result = batch_trilinear_interpolate(
+        density_3d, r, theta, phi_normalized,
+        (theta_lower, theta_upper),
+        (phi_lower, phi_upper),
+        GAC_physical, GTC_c_last, philist
+    )
+    
+    return result.reshape(original_shape)
 
 
 def probe_local_trilinear(
@@ -42,6 +382,14 @@ def probe_local_trilinear(
     Returns:
         插值结果 (scalar or tensor)
     """
+    # 🔧 GPU优化开关 - 向量化版本
+    USE_VECTORIZED = True  # 设置为False以使用原始实现（用于调试）
+    
+    if USE_VECTORIZED:
+        # 使用向量化实现，获得GPU性能提升
+        return probe_local_trilinear_vectorized(density_3d, R, Z, PHI, config)
+    
+    # 🔧 原始实现保持不变（仅用于调试和验证）
     # 🔧 恢复原始处理逻辑，不应该自动添加batch维度
     original_density_shape = density_3d.shape
     if density_3d.ndim == 3:

@@ -102,8 +102,8 @@ def process_time_series(
     n_beam = beam_config.n_beam_points
     
     # 初始化输出数组
-    pout1 = torch.zeros(n_det_v, n_det_t, n_beam, time_n, device='cpu')
-    pout2 = torch.zeros(n_det_v, n_det_t, time_n, device='cpu')
+    pout1 = torch.zeros(n_det_v, n_det_t, n_beam, time_n, device=device)
+    pout2 = torch.zeros(n_det_v, n_det_t, time_n, device=device)
     
     # 处理每个时间点
     for i, (file_path, time_value) in enumerate(file_time_pairs):

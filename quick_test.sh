@@ -23,7 +23,7 @@ echo ""
 echo "2. 检查Python环境..."
 python --version
 echo "   PyTorch版本: $(python -c 'import torch; print(torch.__version__)')"
-echo "   CUDA可用: $(python -c 'import torch; print(torch.cuda.is_available())')"
+echo "   GPU可用: $(python -c 'import torch; print(torch.cuda.is_available())')"
 
 # 检查输入文件
 echo ""
@@ -67,7 +67,7 @@ try:
     config = load_gene_config_from_parameters(
         '/work/DTMP/lhqing/PCI/Data/sample/input/parameters.dat',
         '/work/DTMP/lhqing/PCI/Data/sample/input',
-        device='cpu'
+        device='hip'
     )
     print(f'   ✓ GENE配置加载成功')
     print(f'     - nx0={config.nx0}, nky0={config.nky0}, nz0={config.nz0}')

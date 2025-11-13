@@ -1,3 +1,12 @@
+重要，关于依赖安装：
+python3.9 -m venv venv
+source venv/bin/activate
+
+pip install --no-cache-dir -r requirements.txt
+--no-cache-dir安装原因：
+要安装的 PyTorch ROCm wheel 文件（torch-2.8.0+rocm6.3-....whl）太大了（接近 5GB），超出了 pip 内部缓存机制所能处理的单个文件大小的限制。
+
+
 # PyPCI (Python PCI分析工具) - 完整代码架构说明
 
 ## 项目概述
@@ -327,7 +336,7 @@ output/
     "time_point": 98.07
   },
   "execution": {
-    "device": "cpu",
+    "device": "hip",
     "save_detailed_results": true
   }
 }
@@ -338,7 +347,7 @@ output/
 ### 1. 单时间点分析
 ```bash
 # 直接运行
-python run_pci.py --task single_time --time 98.07 --device cpu
+python run_pci.py --task single_time --time 98.07 --device hip
 
 # 提交PBS任务
 qsub run_pci_single_time.pbs

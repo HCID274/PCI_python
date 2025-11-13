@@ -57,7 +57,7 @@ class FFT3DAnalyzer:
         
         print(f"FFT分析器初始化: sim_type={sim_type}, FVER={self.FVER}")
     
-    def load_time_series(self, device: str = 'cpu') -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+    def load_time_series(self, device: str = 'cuda') -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
         """
         加载IntegratedSignal_overall.mat和时间/空间网格 (按MATLAB精确实现)
         
