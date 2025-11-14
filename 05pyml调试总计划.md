@@ -63,16 +63,14 @@
 
 *   **🎯 目标**: 验证 `parameters.dat` 和 Equilibrium 二进制文件 (`equdata_BZ`, `equdata_be`) 的读取结果完全一致。这是**极其关键且易错**的一步。
 *   **MATLAB 操作**:
-    1.  在 `fread_param2.m` 和 `fread_EQ1.m` 执行完毕后，保存所有加载和计算出的变量。
+    1.  在 `fread_param2.m` 和 `fread_EQ1.m` 执行完毕后，调用统一的调试函数。
     2.  添加代码:
         ```matlab
-        % Stage 2 Debug Output
-        save('debug_stage_2_matlab.txt', ...
-             'nx0', 'nky0', 'nz0', 'q0', 'shat', 'trpeps', ... % from parameters.dat
-             'GRC', 'GZC', 'GFC', 'PA', 'GAC', ...             % from equdata_BZ
-             'GBPR', 'GBPZ', 'GBTP', 'GBPP', 'RG', 'DR', ...   % from equdata_be
-             'B_ref', 'rho_ref');                             % derived params
-        ```*   **Python 操作**:
+        % 在主代码中调用统一调试函数
+        save_stage2_debug_data(gene_obj, eq_obj);
+        ```
+        *   **✅ 已修改**: 创建了统一的 `save_stage2_debug_data.m` 函数，生成 `debug_stage_2_matlab.mat` 文件
+*   **Python 操作**:
     1.  在 `load_gene_config_from_parameters` 和 `load_equilibrium_data` 执行完毕后，保存对应的 NumPy 数组。
     2.  添加代码:
         ```python
