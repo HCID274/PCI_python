@@ -64,31 +64,37 @@ def run_single_time(config: Dict[str, Any], device: str = None):
     print("加载光束配置...")
     beam_config = load_beam_config(str(path_config.beam_config_file))
     
-    # 加载数据文件
+        # 加载数据文件（文本 + 生成二进制）
     time_point = task_config['time_point']
     time_int = int(time_point * 100)
-    binary_file = path_config.get_binary_data_file(time_int)
-    
-    print(f"时间点: {time_point} (文件: {binary_file.name})")
-    
-    # 检查并生成二进制文件
-    if not binary_file.exists():
-        text_file = path_config.get_time_data_file(time_int)
-        if text_file.exists():
-            print("生成二进制文件...")
-            from pci_torch.data_loader import generate_timedata
-            binary_file = generate_timedata(gene_config, str(text_file), time_point, str(path_config.input_dir))
-        else:
-            raise FileNotFoundError(f"数据文件不存在: {text_file}")
-    
-    # 更新配置
-    gene_config.compute_derived_params()
-    
-    # 读取密度场
-    print("读取密度场数据...")
-    from pci_torch.data_loader import fread_data_s
+
+    print(f"时间点: {time_point} (t*100 = {time_int:04d})")
+
+    # 对应 MATLAB: GENEdata = sprintf('%sTORUSIons_act_%.0f.dat', dataC.indir, t*100)
+    text_file = path_config.get_time_data_file(time_int)
+    if not text_file.exists():
+        raise FileNotFoundError(f"数据文件不存在: {text_file}")
+
+    print("从文本生成/刷新二进制密度数据 (generate_timedata)...")
+    from pci_torch.data_loader import generate_timedata, fread_data_s
+
+    # ⚠️ 这里不再判断二进制是否存在，始终按 MATLAB 流程重建，
+    # 同时在 config 上写入 KYMt / KZMt
+    binary_file = generate_timedata(
+        gene_config,
+        str(text_file),
+        time_point,
+        str(path_config.input_dir),
+    )
+
+    # generate_timedata 设置了 KYMt / KZMt，这里重新计算衍生参数
+    if hasattr(gene_config, "compute_derived_params"):
+        gene_config.compute_derived_params()
+
+    # 读取密度场 3D (ntheta, nx, nz)，对应 MATLAB 的 p2
+    print("读取密度场数据 (fread_data_s)...")
     density_3d = fread_data_s(gene_config, str(binary_file), device=device)
-    print(f"  密度场shape: {density_3d.shape}")
+    print(f"  密度场 shape: {tuple(density_3d.shape)}")
     
     # 执行PCI正向投影
     print("执行PCI正向投影...")

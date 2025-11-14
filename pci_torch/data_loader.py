@@ -1063,65 +1063,86 @@ def fread_data_s(
     device: str = 'cuda'
 ) -> torch.Tensor:
     """
-    读取二进制密度场数据
-    
-    与MATLAB的fread_data_s.m完全一致的简化实现
-    
-    Args:
-        config: GENE配置对象
-        binary_file: 二进制数据文件路径 (0000XXXX.dat)
-        device: PyTorch设备
-    
-    Returns:
-        3D密度场数据张量 (ntheta, nx, nz) - 与MATLAB一致的形状
+    读取二进制密度场数据 (0000XXXX.dat)
+
+    对标 MATLAB 的:
+        p2 = fread_data_s(f_n, obj, file)
+
+    MATLAB 逻辑简化为:
+        data = fread(..., 'double')
+        rows = obj.KYMt
+        cols = total_elements / rows
+        data = reshape(data, rows, cols)
+        data2 = zeros(obj.LYM2 / (obj.KZMt + 1), obj.nx0, obj.KZMt + 1)
+        for i = 1:(obj.KZMt+1)
+            data2(:,:,i) = data(400*(i-1)+1:400*i, :)
+        end
+        p2 = data2
     """
-    # 读取原始1D数据（与MATLAB完全一致）
+    # 读取原始 1D double 数据
     data = np.fromfile(binary_file, dtype=np.float64)
-    total_elements = len(data)
-    
-    # 🔧 关键修正：按照MATLAB的方式设置参数
-    # MATLAB中KYMt=11600, KZMt=28, LYM2=11600
-    # 但为了与MATLAB输出[400,128,29]一致，我们需要：
-    # LYM2 / (KZMt + 1) = 11600 / 29 = 400
-    
-    # 根据MATLAB调试输出直接设置关键参数
-    config.KYMt = 11600  # 从MATLAB调试输出获得
-    config.KZMt = 28     # 从MATLAB调试输出获得
-    config.LYM2 = 11600  # 从MATLAB调试输出获得
-    
-    # 重新计算衍生参数
-    config.LZM2 = config.KZMt + 1  # LZM2 = KZMt + 1
-    config.compute_derived_params()
-    
-    print(f"  MATLAB方式设置参数: KYMt={config.KYMt}, KZMt={config.KZMt}, LYM2={config.LYM2}")
-    
-    # 步骤1: 重塑为2D（与MATLAB完全一致）
-    rows = config.KYMt  # 11600
+    total_elements = data.size
+
+    if config.nx0 is None or config.nx0 <= 0:
+        raise ValueError("fread_data_s: config.nx0 必须在调用前设置好")
+
+    # ==== 确保 KYMt / KZMt / LYM2 已经就绪 ====
+    # 正常情况下，generate_timedata 已经在 config 上设置了 KYMt / KZMt
+    # 如果没设置（例如直接从已有二进制启动），这里做一个兜底推断：
+    if not getattr(config, "KYMt", None) or config.KYMt == 0 or \
+       not getattr(config, "KZMt", None):
+
+        # 按列数 = nx0 来推 rows
+        cols = config.nx0
+        if total_elements % cols != 0:
+            raise ValueError(
+                f"fread_data_s: 数据长度 {total_elements} 不能被 nx0={cols} 整除"
+            )
+
+        rows = total_elements // cols  # 等价于 MATLAB 的 obj.KYMt
+
+        # 这个 JT-60SA GENE case 已知 poloidal 点数是 400
+        # rows = 400 * (KZMt+1)
+        ntheta = 400
+        if rows % ntheta != 0:
+            raise ValueError(
+                f"fread_data_s: rows={rows} 不能拆成 400 * nphi，请检查数据格式"
+            )
+        nphi = rows // ntheta
+
+        config.KYMt = rows
+        config.KZMt = nphi - 1
+        config.LYM2 = config.KYMt
+        config.LZM2 = config.KZMt + 1
+        # 如果 GENEConfig 里有衍生参数，这里统一更新一下
+        if hasattr(config, "compute_derived_params"):
+            config.compute_derived_params()
+
+    rows = config.KYMt
     cols = total_elements // rows
     data_2d = data[:rows * cols].reshape(rows, cols)
-    
-    print(f"  重塑为2D: {rows} × {cols} = {rows*cols} 元素")
-    
-    # 步骤2: 创建3D数组（与MATLAB完全一致）
-    dim1 = config.LYM2 // (config.KZMt + 1)  # 11600 // 29 = 400
-    dim2 = config.nx0  # 128
-    dim3 = config.KZMt + 1  # 29
+
+    # ==== 按 MATLAB 方式重排成 3D ====
+    dim1 = config.LYM2 // (config.KZMt + 1)  # 对应 400
+    dim2 = config.nx0                          # 对应 128
+    dim3 = config.KZMt + 1                     # 对应 29
+
+    if dim1 * dim2 * dim3 != total_elements:
+        print(
+            f"[fread_data_s] 警告: dim1*dim2*dim3={dim1*dim2*dim3} "
+            f"≠ total_elements={total_elements}，请检查 KYMt/KZMt/LYM2 设置"
+        )
+
     data3d = np.zeros((dim1, dim2, dim3))
-    
-    print(f"  创建3D数组: {dim1} × {dim2} × {dim3}")
-    
-    # 步骤3: 循环填充3D数据（与MATLAB完全一致）
-    for i in range(dim3):  # i = 0 到 28 (共29层)
-        start_row = 400 * i  # 硬编码400，与MATLAB一致
-        end_row = 400 * (i + 1)
+    poloidal = dim1  # 这里就是 400
+
+    for i in range(dim3):  # i = 0..(KZMt)
+        start_row = poloidal * i
+        end_row = poloidal * (i + 1)
         data3d[:, :, i] = data_2d[start_row:end_row, :]
-    
-    print(f"  循环填充完成，形状: {data3d.shape}")
-    print(f"  数据范围: [{data3d.min():.3f}, {data3d.max():.3f}]")
-    print(f"  数据均值: {data3d.mean():.3f}")
-    
-    # 转换为PyTorch张量
+
+    # 转成 PyTorch tensor
     tensor = to_tensor(data3d, device=device)
-    
     return tensor
+
 

@@ -1,195 +1,224 @@
-该计划的核心是**“分段输出，精确对比”**，确保在进入下一阶段前，当前阶段的所有中间数据都与MATLAB的“黄金标准”完全一致。
+## 一、当前进度 & 核心思路
+
+### 已经确认无误的部分
+
+* **阶段 1：参数解析 & 路径配置**
+  入口参数、路径、字节序等已经跑通，用不上再折腾。
+
+* **阶段 2：GENE 配置 & Equilibrium 数据加载** ✅
+
+  * `parameters.dat` → 所有标量（`nx0, q0, shat, trpeps, B_ref, rho_ref, inside, outside ...`）
+  * `equdata_BZ` → `GRC/GZC/GFC/GAC/GTC_f/GTC_c` 形状完全一致，差值在 1e-15 级别
+  * `equdata_be` → 所有磁场数组、网格参数完全一致
+    👉 这一块可以视为“黄金标准已复刻”。
+
+### 之后所有问题，必然在：
+
+1. **密度数据链路**：文本→二进制→3D reshape→padding→重排
+2. **光束几何 + 插值 + 线积分**：beam_grid / 坐标转换 / 三线性插值
+
+所以新的蓝图要在这两条线上**交叉推进，但顺序上先卡死“密度原始 3D 是否一致”**，再看几何和插值。
 
 ---
 
-### **调试总策略**
+## 二、重新分段的调试蓝图（从已完成往下）
 
-1.  **环境准备**:
-    *   在MATLAB代码的每个阶段末尾，使用 `save('debug_stage_X.txt', 'var1', 'var2', ...)` 命令，将该阶段的关键变量保存为 `.txt` 文件。
-    *   在Python中，确保已安装 `scipy` 和 `numpy` 库。`scipy.io.loadmat` 可以读取MATLAB保存的文件，`numpy.allclose` 是对比浮点数数组的利器。
-    *   建议使用版本控制工具（如 Git），每通过一个阶段的调试，就进行一次提交（commit），方便追踪问题和回退。
-
-2.  **对比原则**:
-    *   **形状 (Shape) 优先**: 首先检查数组的维度和大小 (`.shape`) 是否完全一致。
-    *   **数据类型 (Dtype) 其次**: 确保数据类型匹配（例如 `float64` vs `float32`）。
-    *   **数值精度 (Value) 最后**: 使用 `numpy.allclose(matlab_var, python_var, rtol=1e-5, atol=1e-8)` 进行浮点数比较，不要用 `==` 直接比较。`rtol` (相对容差) 和 `atol` (绝对容差) 可以根据需要调整。
-    *   **注意索引**: 始终牢记 **MATLAB是1-based索引，Python是0-based索引**。这是最常见的错误来源。
+我用你原来的 6 个阶段做外层框架，在里面插入更细的子阶段，方便你一段段打钩。
 
 ---
 
-### **分阶段调试计划 (Step-by-Step Debugging Plan)**
+### ✅ 阶段 1：参数解析 & 路径配置（已完成）
 
-#### **第1阶段：参数解析和路径配置 (Parameter & Path Verification)**
+* 不再重点动它，之后如果有问题，一般也不是这儿导致的。
 
-*   **🎯 目标**: 验证所有从命令行和配置文件中读取的参数完全一致。
-*   **MATLAB 操作**:
-    1.  在 `LSview_com` 函数的路径配置完成后，保存所有解析出的参数。
-    2.  添加代码:
-        ```matlab
-        % Stage 1 Debug Output
-        debug_data.sim_type = 'GENE';
-        debug_data.data_no = 301;
-        debug_data.time_point = 98.07;
-        debug_data.var_type = 4;
-        debug_data.input_dir = '/work/DTMP/lhqing/PCI/Data/matlab_input/301/';
-        debug_data.output_dir = '/work/DTMP/lhqing/PCI/Data/matlab_output/';
-        debug_data.byte_order = 'ieee-le';
-        save('debug_stage_1_matlab.txt', '-struct', 'debug_data');
-        ```
-*   **Python 操作**:
-    1.  在`run_pci.py`中，解析完 `argparse` 和 `paths.json` 后，将对应的配置变量保存。
-    2.  使用 `numpy` 或 `scipy.io.savemat` 保存：
-        ```python
-        # Stage 1 Debug Output
-        import scipy.io
+---
 
-        debug_data = {
-            'sim_type': task_config.sim_type,
-            'data_no': task_config.data_no,
-            'time_point': task_config.time,
-            'var_type': task_config.var,
-            'input_dir': path_config.input_dir,
-            'output_dir': path_config.output_dir,
-            # 确认Python代码中如何处理字节序
-            'byte_order': 'ieee-le'
-        }
-        scipy.io.savemat('debug_stage_1_python.txt', debug_data)
-        ```
-*   **对比与检查**:
-    *   加载两个 `.txt` 文件，逐一对比字符串和数值是否相等。
-    *   **检查点**: 路径的末尾是否有斜杠 `/`？字符串大小写是否一致？
+### ✅ 阶段 2：GENE 配置 & Equilibrium 数据加载（已完成）
 
-#### **第2阶段：GENE配置和Equilibrium数据加载 (Config & EQ Data Loading)**
+* 你现在的 `debug_gene_param_eq_py.npz` vs MATLAB 的 `debug_gene_param_eq_ml_301_t9807.mat` 已经说明：
 
-*   **🎯 目标**: 验证 `parameters.dat` 和 Equilibrium 二进制文件 (`equdata_BZ`, `equdata_be`) 的读取结果完全一致。这是**极其关键且易错**的一步。
-*   **MATLAB 操作**:
-    1.  在 `fread_param2.m` 和 `fread_EQ1.m` 执行完毕后，调用统一的调试函数。
-    2.  添加代码:
-        ```matlab
-        % 在主代码中调用统一调试函数
-        save_stage2_debug_data(gene_obj, eq_obj);
-        ```
-        *   **✅ 已修改**: 创建了统一的 `save_stage2_debug_data.m` 函数，生成 `debug_stage_2_matlab.mat` 文件
-*   **Python 操作**:
-    1.  在 `load_gene_config_from_parameters` 和 `load_equilibrium_data` 执行完毕后，保存对应的 NumPy 数组。
-    2.  添加代码:
-        ```python
-        # Stage 2 Debug Output
-        # ... after loading all data ...
-        scipy.io.savemat('debug_stage_2_python.txt', {
-            'nx0': gene_config.nx0, 'nky0': gene_config.nky0, 'nz0': gene_config.nz0,
-            'q0': gene_config.q0, 'shat': gene_config.shat, 'trpeps': gene_config.trpeps,
-            'GRC': eq_data.GRC, 'GZC': eq_data.GZC, 'GFC': eq_data.GFC,
-            'PA': eq_data.PA, 'GAC': eq_data.GAC,
-            'GBPR': eq_data.GBPR, 'GBPZ': eq_data.GBPZ, 'GBTP': eq_data.GBTP, 'GBPP': eq_data.GBPP,
-            'RG': eq_data.RG, 'DR': eq_data.DR,
-            'B_ref': gene_config.B_ref, 'rho_ref': gene_config.rho_ref
-        })
-        ```
-*   **对比与检查**:
-    *   **字节序 (Endianness)**: 你的流程树提到 `equdata_be` 是 Big-Endian，`equdata_BZ` 可能是 Little-Endian。请务必在Python的 `numpy.fromfile` 或等效函数中正确设置 `dtype`，例如 `np.dtype('>f8')` 表示 Big-Endian 8字节浮点数。这是最常见的二进制文件读取错误。
-    *   **FORTRAN Namelist**: 确认Python的解析器能正确处理FORTRAN的namelist格式，特别是数组的赋值方式。
-    *   **数组形状**: MATLAB读取的数组可能是Fortran顺序（列优先），而NumPy默认是C顺序（行优先）。在 `reshape` 时可能需要指定 `order='F'`。使用 `.shape` 仔细检查。
-    *   **数值对比**: 使用 `numpy.allclose` 逐个对比所有数组。
+  * 物理参数、`inside/outside`、EQ 网格、磁场都对上 → **这层当基石用就行了**。
 
-#### **第3阶段：光束配置和几何计算 (Beam Geometry)**
+---
 
-*   **🎯 目标**: 验证生成的三维光束采样网格 (`beam_grid`) 完全一致。
-*   **MATLAB 操作**:
-    1.  在生成3D光束采样网格后，保存该网格。
-    2.  添加代码 (假设网格变量名为 `beam_grid_3d`):
-        ```matlab
-        % Stage 3 Debug Output
-        save('debug_stage_3_matlab.txt', 'beam_grid_3d'); % Shape: (div1*2+1, div2*2+1, divls+1, 3)
-        ```
-*   **Python 操作**:
-    1.  在 `compute_beam_grid` 函数执行后，保存返回的 `beam_grid` 张量/数组。
-    2.  添加代码:
-        ```python
-        # Stage 3 Debug Output
-        # beam_grid is a torch.Tensor, convert to numpy
-        scipy.io.savemat('debug_stage_3_python.txt', {'beam_grid_3d': beam_grid.cpu().numpy()})
-        ```
-*   **对比与检查**:
-    *   **数组维度顺序**: 确认 MATLAB `(i, j, k, l)` 的维度顺序与 Python `(i, j, k, l)` 完全对应。
-    *   **浮点数精度**: 向量计算 (`B2_start - B2_end`) 和三角函数 (`phi * 2 * pi`) 的浮点数误差可能会累积。使用 `numpy.allclose` 进行对比。
+### ✅ 阶段 2.5：密度 3D 读入一致性（已完成）
 
-#### **第4阶段：数据预处理 (Density Field Preprocessing)**
+> 这是之前蓝图里缺的一环，现在要单独拎出来放在 beam geometry 之前。
 
-*   **🎯 目标**: 验证从二进制文件读取并经过Reshape、Padding和重排后的最终密度场数据完全一致。
-*   **MATLAB 操作**:
-    1.  在 `probe_multi2.m` 内部，在进入核心插值计算循环之前，保存最终处理好的3D密度场数组 (假设变量名为 `processed_density_field`)。
-    2.  添加代码:
-        ```matlab
-        % Stage 4 Debug Output
-        save('debug_stage_4_matlab.txt', 'processed_density_field', '-v7.3'); % Use -v7.3 for large arrays
-        ```
-*   **Python 操作**:
-    1.  在 `fread_data_s` (或等效的加载和预处理函数) 执行完毕后，保存最终的密度场数组。
-    2.  添加代码:
-        ```python
-        # Stage 4 Debug Output
-        # density_field_tensor is the final processed tensor
-        scipy.io.savemat('debug_stage_4_python.txt', {'processed_density_field': density_field_tensor.cpu().numpy()})
-        ```
-*   **对比与检查**:
-    *   **Reshape顺序**: 同样，注意 `order='F'` vs `order='C'` 的问题。
-    *   **Padding**: 检查径向内外扩展的逻辑和数值是否与MATLAB完全一致。
-    *   **Poloidal数据重排**: 这是一个复杂的索引操作，需要逐行对比MATLAB的实现逻辑。
-    *   **周期边界**: 确认添加的周期边界是否正确（例如，最后一列/行是否是第一列/行的拷贝）。
+**目标：**
 
-#### **第5阶段：PCI正向投影计算 (Forward Projection - The Core)**
+* 确认：**同一个 `00009807.dat`**，Python 的 `fread_data_s` 输出的 3D 张量，和 MATLAB 的对应函数输出的 3D 数组，在：
 
-*   **🎯 目标**: 逐一拆解和验证核心插值算法 `probeEQ_local_s.m` / `probe_local_trilinear`。这是整个调试过程的**核心难点**。
-*   **策略**: 不要直接对比最终的 `pout1` 和 `pout2`。必须深入函数内部，对比中间结果。选择光束路径上的**同一个采样点** (例如，`beam_grid` 的 `[0,0,0,:]` 点) 作为“探针”，对比其所有中间计算结果。
-*   **子步骤与操作**:
-    1.  **5a. 坐标转换**:
-        *   **MATLAB**: 在 `probeEQ_local_s.m` 中，保存计算出的相对磁轴的 `(r, theta)`。
-        *   **Python**: 在 `probe_local_trilinear` 中，保存对应的 `r` 和 `theta`。
-        *   **对比**: `numpy.allclose`。检查 `mod` 函数的行为差异（MATLAB的 `mod` 和 Python的 `%` 对负数的处理不同，`a - m * floor(a/m)` 是正确的跨语言实现）。
-    2.  **5b. `bisec` 查找**:
-        *   **MATLAB**: 保存 `bisec` 函数返回的索引值 (如 `theta_p1`, `r_p1` 等)。
-        *   **Python**: 保存 `bisec_batch` 或 `bisec` 返回的索引值。
-        *   **对比**: **直接对比数值**。MATLAB返回的是1-based，Python返回的是0-based。对比前，将MATLAB的索引减1 (`matlab_index - 1`)。
-    3.  **5c. 边界检查**:
-        *   **MATLAB**: 保存边界检查的逻辑结果 (一个布尔值，表示点是否在plasma内部)。
-        *   **Python**: 保存对应的布尔值。
-        *   **对比**: 必须相等。注意 `(r < GAC[theta_p1]) AND (r < GAC[theta_p2])` 逻辑中的索引是否正确。
-    4.  **5d. 权重计算**:
-        *   **MATLAB**: 保存计算出的8个三线性插值权重。
-        *   **Python**: 保存对应的8个权重。
-        *   **对比**: `numpy.allclose`。
-    5.  **5e. 插值结果**:
-        *   **MATLAB**: 保存对单个点插值后的密度场采样值。
-        *   **Python**: 保存对应的值。
-        *   **对比**: `numpy.allclose`。
-    6.  **5f. 最终信号 (`pout1`, `pout2`)**:
-        *   只有当以上所有子步骤对单个点都验证通过后，才去对比最终的积分信号 `pout1` 和检测器信号 `pout2`。
-        *   **MATLAB**: 保存 `pout1` 和 `pout2`。
-        *   **Python**: 保存 `pci_signal_1d` 和 `detector_signal_2d`。
-        *   **对比**: `numpy.allclose`。
+  * `shape` 上完全相同（比如 `(400, 128, 29)`）
+  * 数值上 `max abs diff ~ 1e-12` 或更小
 
-#### **第6阶段：可视化和结果输出 (Visualization)**
+**要对比的对象：**
 
-*   **🎯 目标**: 验证绘图数据的一致性。
-*   **策略**: 如果第5阶段的输出 `pout2` 已经完全一致，那么这一阶段的问题通常出在绘图函数本身。
-*   **操作**:
-    1.  **Figure 3 (检测器信号)**: 对比传入 `contourf` 的 `pout2` 数据。既然数据已经验证过，问题可能在于 `meshgrid` 的 `indexing='xy'` (默认) vs `indexing='ij'` 参数，或者 `contourf(X, Y, Z)` 的参数顺序。
-    2.  **Figure 4 (波数空间)**:
-        *   **MATLAB**: 保存 `fft2` 的输入和输出。
-        *   **Python**: 保存 `fft2` 的输入和输出。
-        *   **对比**: `numpy.allclose` 对比复数数组。确认FFT的归一化因子 (`norm="ortho"`) 和 `fftshift` 的使用是否一致。
-        *   **坐标轴**: 确认 `kx`, `ky` 的计算和归一化 (`*rho_ref`) 逻辑完全相同。
+* MATLAB：刚从二进制 reshape 成 `(ntheta, nx, nz)` 的那一坨（还没做 padding / 周期边界）
+* Python：你当前 `fread_data_s` 返回的 `density_3d`
 
-### **总结与建议**
+**文件命名建议：**
 
-1.  **耐心是关键**: 这个过程会很繁琐，但非常有效。严格按照阶段顺序，不要跳步。
-2.  **从简到繁**: 从单个标量开始，然后是一维数组，最后是高维数组。对于核心算法（第5阶段），从单个点开始调试，成功后再扩展到整个数组。
-3.  **日志记录**: 在Python代码中多使用 `print` 或日志库，输出中间变量的形状和数值，方便快速定位问题。
-4.  **优先怀疑点**:
-    *   **字节序 (Endianness)** in Stage 2.
-    *   **数组维度顺序 (Fortran vs. C)** in Stages 2, 4.
-    *   **索引 (1-based vs. 0-based)** in Stage 5.
-    *   **浮点数精度问题** throughout.
+* Python：`debug_gene_density_py_t9807.npz`（变量名 `density3d`）
+* MATLAB：`debug_gene_density_ml_00009807.mat`（变量名例如 `data3d`）
 
-遵循以上计划，您将能够系统性地定位并修复Python代码中的问题。祝您调试顺利！
+**通过标准：**
+
+* ✅ 第一层：`shape` 一致 → 确认维度顺序没搞反（ntheta / nx / nz）
+* ✅ 第二层：`max abs diff` 在 1e-12 左右 → reshape / 坐标次序都一致
+
+**验证结果：**
+
+* ✅ `shape` 完全一致：`(400, 128, 29)` = `(ntheta, nx, nz)`
+* ✅ 数值完全一致：`max abs diff = 0.0`，`rel diff = 0.0`
+* ✅ **结论**：GENE 原始输出 → 0000XXXX.dat → (ntheta, nx, nz) 这条链路在 Python 和 MATLAB 之间已经完全等价，可以放心当成"验证通过"的模块。
+
+➡️ **阶段 2.5 已通过，可以进入 Stage 3 / 4。**
+
+---
+
+### 🔜 阶段 3：光束配置和几何计算（Beam Geometry）
+
+> 在 2.5 OK 后，这一层只依赖：
+>
+> * GENE/EQ 配置（已经验证好）
+> * `LS_condition_JT60SA.txt` + 一些几何公式
+
+**目标：**
+
+* Python 的 `compute_beam_grid` 生成的 `beam_grid`
+  与 MATLAB 在 `LSview_com.m` 中生成的 `(xls, yls, zls)` 组成的 3D 网格，在：
+
+  * 形状上相同 → `(2*div1+1, 2*div2+1, divls+1, 3)`
+  * 数值上 `allclose`（允许 1e-12 左右误差）
+
+**要对比的内容：**
+
+* 三维网格：
+
+  * MATLAB：可以把 `xls, yls, zls` reshape 成 `(div1_2, div2_2, divls_2, 3)` 统一存为 `beam_grid_3d`
+  * Python：`beam_grid` 张量（本来就是 `[v_idx, t_idx, s_idx, 3]` 这种结构）
+* 起止点：`B2_start / B2_end` 以及 `p1`（光束方向向量）
+
+**确认点：**
+
+* φ 角的处理是否完全一致：`phi * 2 * pi`
+* mm → m 的单位换算是否在两个代码里都只做了一次
+* `div1/div2/divls` 的遍历次序：MATLAB 是外层 j=1:div1_2 再 j=1:div2_2 再 j=1:divls_2；Python 必须映射成同样顺序
+
+**文件建议：**
+
+* MATLAB：`debug_stage_3_matlab.mat` → `beam_grid_3d`
+* Python：`debug_stage_3_python.npz` → `beam_grid_3d`
+
+---
+
+### 🔜 阶段 4：密度场预处理 – “从 3D 到 processed_density_field”
+
+> 这一层对应你原来的“第4阶段：数据预处理和时间序列处理”，但我们只看**一个时间点**。
+
+内部可以再细拆两小步，方便排错：
+
+#### 4.1 在 MATLAB 里拆出“3D → 扩展 + 重排”的入口/出口
+
+**目标：**
+
+* 在 MATLAB 中找到：`data3d`（2.5 里的原始 3D）是在哪一步被：
+
+  * 扩展径向（inside/outside padding）
+  * 添加 toroidal/poloidal 周期边界
+  * 重排 poloidal/phi 的索引
+* 找一个“最终进入 `probe_multi2` 插值环节前”的密度场版本，命名为 `processed_density_field_ml` 保存起来。
+
+#### 4.2 Python 侧对应位置导出同样的 processed 版本
+
+* 你 Python 这边相应的位置多半在：
+
+  * `fread_data_s` 后，或者
+  * `forward_projection` 内部在送入插值前的一层缓存（视你代码结构而定）
+
+**目标：**
+
+* Python 侧拿到与 MATLAB **语义上等价**的 `processed_density_field_py`：
+
+  * `shape` 一致（注意：这一步的 `nx` 可能已经不是 `nx0` 了，而是 `nx0 + inside + outside + 边界点`）
+  * 周期边界最后一列/行是不是第一列/行的拷贝
+  * padding 区域的数值匹配（是否复制边界，还是填 0）
+
+**对比重点：**
+
+* **reshape 顺序**：是否总是 `(ntheta, nx, nz)` 一致
+* **padding 策略**：两边是不是都“复制边界值”而不是填 0（或别的）
+* **poloidal 方向翻转 / 重排**：有些代码会在 poloidal 上做 `flipud / circshift`，要看是否同步做了
+
+---
+
+### 🔜 阶段 5：PCI 正向投影（核心插值）的单点调试
+
+> 在 2.5、3、4 都通过后再干这一步，否则你会看见一堆乱差却不知道是谁的锅。
+
+**核心策略：**
+
+* 不先对比完整的 `pout1/pout2`，而是**挑一条光线上的单个采样点**当“探针”，逐层对比中间量。
+
+**建议流程：**
+
+1. 选一个固定的 `(iv, it, is)`，例如 beam_grid 的中心或某个非边界点：
+
+   * MATLAB：在 `probe_multi2` / `probeEQ_local_s` 里打印/存这个点对应的输入 `(R,Z,phi)` 和中间变量；
+   * Python：在 `forward_projection` / 插值函数里对同一个索引做同样的 dump。
+
+2. 对比以下中间量（两边一一对应）：
+
+   * 坐标变换：
+
+     * `(R,Z,phi)` → `(r, theta)`（相对磁轴）
+   * `bisec` 查找结果：
+
+     * radial index / theta index / phi index，注意 MATLAB 1-based vs Python 0-based
+   * flux surface 内部/外部判断的布尔值
+   * 参与三线性插值的 8 个网格点值（密度）
+   * 8 个权重 & 插值结果一个标量
+
+3. 单点一致后，再放开为**一条光线**的所有采样点，对比这条线上的插值结果向量。
+
+---
+
+### 🔜 阶段 6：整条光束 / 全平面信号 & 可视化
+
+当上面都 OK 时：
+
+* 对比完整的：
+
+  * `pout1` ：沿光束的 3D 信号
+  * `pout2` ：探测器面上的 2D 积分信号
+* 再对比 FFT 后的波数谱（kx-ky平面），确认：
+
+  * FFT 正反、归一化方式
+  * `fftshift` 是否一致
+  * k 轴的单位是否同样乘了 `rho_ref`
+
+这一步如果出了差，通常就是**整体归一化系数 / 滤波 / 平移**这样的末端问题，已经比较容易了。
+
+---
+
+## 三、执行顺序总结（给你一个简版 checklist）
+
+从现在开始（你已经过了 Stage 2）：
+
+1. **✅ Stage 2.5：原始 3D 密度 `density3d` 对比**
+
+   * ✅ shape 一致：`(400, 128, 29)`
+   * ✅ 值完全一致：`max abs diff = 0.0`，`rel diff = 0.0`
+
+2. **Stage 3：光束几何 `beam_grid_3d` 对比**
+
+3. **Stage 4：processed density（padding + 周期 + 重排）对比**
+
+4. **Stage 5：单点插值中间量对比 → 单光束对比**
+
+5. **Stage 6：整面 `pout2` / 波数谱 / 可视化对比**
+
+你可以把这套蓝图打印出来，当 checklist 用：每通过一小步，就在那一行打个 ✓，并在 Git 里做一次 commit，方便回滚。
+
+如果你接下来确定了 2.5 的对比结果（shape / max diff），直接贴出来，我们就按这个蓝图继续往下细化对应阶段的具体调试代码。
