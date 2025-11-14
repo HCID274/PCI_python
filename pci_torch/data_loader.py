@@ -121,6 +121,9 @@ def load_gene_config(
     """
     从parameters.dat和平衡态数据加载GENE配置
     
+    注意：此函数内部调用 load_gene_config_from_parameters 以确保
+    m_ref 和 n_ref 的单位处理与MATLAB一致。
+    
     Args:
         parameters_file: parameters.dat文件路径
         equilibrium_dir: 平衡态数据目录（包含equdata_*文件）
@@ -129,265 +132,9 @@ def load_gene_config(
     Returns:
         GENEConfig对象
     """
-    # 解析parameters.dat
-    namelists = parse_fortran_namelist(parameters_file)
-    
-    # 创建配置对象
-    config = GENEConfig()
-    
-    # 读取parallelization参数
-    if 'parallelization' in namelists:
-        para = namelists['parallelization']
-        config.n_procs_s = para.get('n_procs_s', config.n_procs_s)
-        config.n_procs_v = para.get('n_procs_v', config.n_procs_v)
-        config.n_procs_w = para.get('n_procs_w', config.n_procs_w)
-        config.n_procs_x = para.get('n_procs_x', config.n_procs_x)
-        config.n_procs_y = para.get('n_procs_y', config.n_procs_y)
-        config.n_procs_z = para.get('n_procs_z', config.n_procs_z)
-        config.n_procs_sim = para.get('n_procs_sim', config.n_procs_sim)
-    
-    # 读取box参数
-    if 'box' in namelists:
-        box = namelists['box']
-        config.n_spec = box.get('n_spec', config.n_spec)
-        config.nx0 = box.get('nx0', config.nx0)
-        config.nky0 = box.get('nky0', config.nky0)
-        config.nz0 = box.get('nz0', config.nz0)
-        config.nv0 = box.get('nv0', config.nv0)
-        config.nw0 = box.get('nw0', config.nw0)
-        config.kymin = box.get('kymin', config.kymin)
-        config.lv = box.get('lv', config.lv)
-        config.lw = box.get('lw', config.lw)
-        config.lx = box.get('lx', config.lx)
-        config.nexc = box.get('nexc', config.nexc)
-    
-    # 读取general参数
-    if 'general' in namelists:
-        gen = namelists['general']
-        config.beta = gen.get('beta', config.beta)
-        config.debye2 = gen.get('debye2', config.debye2)
-    
-    # 读取geometry参数
-    if 'geometry' in namelists:
-        geom = namelists['geometry']
-        config.q0 = geom.get('q0', config.q0)
-        config.shat = geom.get('shat', config.shat)
-        config.trpeps = geom.get('trpeps', config.trpeps)
-        config.major_R = geom.get('major_R', config.major_R)
-    
-    # 读取species参数（第一个物种）
-    if 'species' in namelists:
-        spec = namelists['species']
-        config.name1 = spec.get('name', config.name1)
-        config.omn1 = spec.get('omn', config.omn1)
-        config.omt1 = spec.get('omt', config.omt1)
-        config.mass1 = spec.get('mass', config.mass1)
-        config.temp1 = spec.get('temp', config.temp1)
-        config.dens1 = spec.get('dens', config.dens1)
-        config.charge1 = spec.get('charge', config.charge1)
-    
-    # 读取units参数
-    if 'units' in namelists:
-        units = namelists['units']
-        config.B_ref = units.get('Bref', config.B_ref)
-        config.T_ref = units.get('Tref', config.T_ref)
-        
-        # 修复n_ref单位问题：参数文件中是8.5，实际应该是8.5e+19
-        nref_value = units.get('nref', config.n_ref)
-        if nref_value is not None:
-            # 检查是否是8.5这样的值，需要乘以1e19
-            if 8.0 <= nref_value <= 9.0:
-                config.n_ref = nref_value * 1e19  # 单位修正
-            else:
-                config.n_ref = nref_value
-        
-        config.L_ref = units.get('Lref', config.L_ref)
-        config.m_ref = units.get('mref', config.m_ref)
-    
-    # 触发__post_init__来计算导出参数
-    config.__post_init__()
-    
-    # 如果提供了平衡态数据目录，加载平衡态数据
-    if equilibrium_dir is not None:
-        eq_dir = Path(equilibrium_dir)
-        
-        # 加载equdata_BZ
-        equdata_bz = eq_dir / 'equdata_BZ'
-        if equdata_bz.exists():
-            load_equilibrium_bz(config, str(equdata_bz), device)
-        
-        # 加载equdata_be
-        equdata_be = eq_dir / 'equdata_be'
-        if equdata_be.exists():
-            load_equilibrium_be(config, str(equdata_be), device)
-    
-    return config
-
-
-def load_equilibrium_bz(config: GENEConfig, file_path: str, device: str = 'cuda'):
-    """
-    加载equdata_BZ文件（平衡态坐标数据）
-    
-    文件格式 (binary, little-endian):
-    - 2个int32: NSGMAX, NTGMAX
-    - 3个double数组 (各NSGMAX*NTGMAX): GRC2, GZC2, GFC2
-    - 1个double数组 (NSGMAX): GQPS
-    
-    这个函数会修改config对象，添加平衡态数据
-    """
-    with open(file_path, 'rb') as f:
-        # 读取维度
-        NSGMAX = np.fromfile(f, dtype=np.int32, count=1)[0]
-        NTGMAX = np.fromfile(f, dtype=np.int32, count=1)[0]
-        
-        # 读取坐标数据
-        n_points = NSGMAX * NTGMAX
-        GRC2 = np.fromfile(f, dtype=np.float64, count=n_points)
-        GZC2 = np.fromfile(f, dtype=np.float64, count=n_points)
-        GFC2 = np.fromfile(f, dtype=np.float64, count=n_points)
-        GQPS = np.fromfile(f, dtype=np.float64, count=NSGMAX)
-    
-    # Reshape到2D
-    GRCt = GRC2.reshape(NSGMAX, NTGMAX)
-    GZCt = GZC2.reshape(NSGMAX, NTGMAX)
-    GFCt = GFC2.reshape(NSGMAX, NTGMAX)
-    
-    # 插值到目标网格 (简化版本，使用原始数据)
-    # 完整实现需要复杂的插值，这里先使用原始网格
-    if config.nx0 is not None:
-        IRMAX = config.nx0 + config.inside + config.outside
-    else:
-        IRMAX = NSGMAX
-    
-    if config.LYM2 is not None and config.KZMt is not None:
-        ITGMAX = config.LYM2 // (config.KZMt + 1)
-    else:
-        ITGMAX = NTGMAX
-    
-    # 为了简化，直接使用原始网格并扩展周期性边界
-    GRC = np.zeros((IRMAX + 1, ITGMAX + 1))
-    GZC = np.zeros((IRMAX + 1, ITGMAX + 1))
-    GFC = np.zeros((IRMAX + 1, ITGMAX + 1))
-    
-    # 简单插值（线性重采样）
-    from scipy.interpolate import interp2d
-    r_old = np.linspace(0, 1, NSGMAX)
-    theta_old = np.linspace(0, 2*np.pi, NTGMAX)
-    r_new = np.linspace(0, 1, IRMAX + 1)
-    theta_new = np.linspace(0, 2*np.pi, ITGMAX + 1)
-    
-    # 使用最近邻插值（简化）
-    for i in range(IRMAX + 1):
-        for j in range(ITGMAX + 1):
-            i_old = int(i * (NSGMAX - 1) / IRMAX)
-            j_old = int(j * (NTGMAX - 1) / ITGMAX) % NTGMAX
-            GRC[i, j] = GRCt[i_old, j_old]
-            GZC[i, j] = GZCt[i_old, j_old]
-            GFC[i, j] = GFCt[i_old, j_old]
-    
-    # 计算导出量
-    PA = np.array([GRC[0, 0], GZC[0, 0]])  # 等离子体轴心
-    GAC = np.sqrt((GRC - PA[0])**2 + (GZC - PA[1])**2)  # 小半径
-    
-    # 计算theta坐标
-    GTC_f = np.tile(np.linspace(0, 2*np.pi, ITGMAX + 1), (IRMAX + 1, 1))
-    GTC_c = np.arctan2(GZC - PA[1], GRC - PA[0])
-    GTC_c = np.mod(GTC_c, 2*np.pi)
-    GTC_c[:, -1] = 2.0 * np.pi
-    
-    # 保存到config
-    config.NSGMAX = NSGMAX
-    config.NTGMAX = ITGMAX
-    config.GRC = to_tensor(GRC, device=device)
-    config.GZC = to_tensor(GZC, device=device)
-    config.GFC = to_tensor(GFC, device=device)
-    config.PA = to_tensor(PA, device=device)
-    config.GAC = to_tensor(GAC, device=device)
-    config.GTC_f = to_tensor(GTC_f, device=device)
-    config.GTC_c = to_tensor(GTC_c, device=device)
-    config.Rmax = float(np.max(GRC))
-    config.Rmin = float(np.min(GRC))
-    config.Zmax = float(np.max(GZC))
-    config.Zmin = float(np.min(GZC))
-
-
-def load_equilibrium_be(config: GENEConfig, file_path: str, device: str = 'cuda'):
-    """
-    加载equdata_be文件（平衡态磁场数据）
-    
-    文件格式 (binary, big-endian):
-    - 3个int32: NRGM, NZGM, NPHIGM
-    - 6个float64: RG[0:6] (R grid parameters)
-    - 3个float64: DR[0:3] (grid spacing)
-    - 4个float64数组 (各NRGM*NZGM*NPHIGM): GBPR2, GBPZ2, GBTP2, GBPP2
-    
-    这个函数会修改config对象，添加磁场数据
-    """
-    with open(file_path, 'rb') as f:
-        # 读取维度 (big-endian)
-        NRGM = np.fromfile(f, dtype='>i4', count=1)[0]  # >i4 = big-endian int32
-        NZGM = np.fromfile(f, dtype='>i4', count=1)[0]
-        NPHIGM = np.fromfile(f, dtype='>i4', count=1)[0]
-        
-        # 读取网格参数
-        RG = np.fromfile(f, dtype='>f8', count=6)  # >f8 = big-endian float64
-        DR = np.fromfile(f, dtype='>f8', count=3)
-        
-        # 读取磁场数据
-        n_points = NRGM * NZGM * NPHIGM
-        GBPR2 = np.fromfile(f, dtype='>f8', count=n_points)
-        GBPZ2 = np.fromfile(f, dtype=np.float64, count=n_points)
-        GBTP2 = np.fromfile(f, dtype=np.float64, count=n_points)
-        GBPP2 = np.fromfile(f, dtype=np.float64, count=n_points)
-    
-    # 如果是2D数据，扩展到3D
-    NPHIGM_set = 68  # 标准toroidal点数
-    if NPHIGM == 1:
-        NPHIGM = NPHIGM_set
-        GBPR2 = np.tile(GBPR2, NPHIGM)
-        GBPZ2 = np.tile(GBPZ2, NPHIGM)
-        GBTP2 = np.tile(GBTP2, NPHIGM)
-        GBPP2 = np.tile(GBPP2, NPHIGM)
-        RG[4] = 0.0
-        DR[2] = 2.0 * np.pi / (NPHIGM - 1)
-    
-    # Reshape到3D
-    GBPR_3d = GBPR2.reshape(NRGM, NZGM, NPHIGM)
-    GBPZ_3d = GBPZ2.reshape(NRGM, NZGM, NPHIGM)
-    GBTP_3d = GBTP2.reshape(NRGM, NZGM, NPHIGM)
-    GBPP_3d = GBPP2.reshape(NRGM, NZGM, NPHIGM)
-    
-    # 提取2D切片 (phi=0)
-    GBPR_2d = GBPR_3d[:, :, 0]
-    GBPZ_2d = GBPZ_3d[:, :, 0]
-    GBTP_2d = GBTP_3d[:, :, 0]
-    GBPP_2d = GBPP_3d[:, :, 0]
-    
-    # 保存到config
-    config.NRGM = NRGM
-    config.NZGM = NZGM
-    config.NPHIGM = NPHIGM
-    config.RG1 = RG[0:2]
-    config.RG2 = RG[2:4]
-    config.RG3 = RG[4:6]
-    config.DR1 = DR[0]
-    config.DR2 = DR[1]
-    config.DR3 = DR[2]
-    
-    config.GBPR_3d = to_tensor(GBPR_3d, device=device)
-    config.GBPZ_3d = to_tensor(GBPZ_3d, device=device)
-    config.GBTP_3d = to_tensor(GBTP_3d, device=device)
-    config.GBPP_3d = to_tensor(GBPP_3d, device=device)
-    
-    config.GBPR_2d = to_tensor(GBPR_2d, device=device)
-    config.GBPZ_2d = to_tensor(GBPZ_2d, device=device)
-    config.GBTP_2d = to_tensor(GBTP_2d, device=device)
-    config.GBPP_2d = to_tensor(GBPP_2d, device=device)
-    
-    # 计算等离子体轴心的B0
-    if config.PA is not None:
-        # 简化：使用B_ref作为B0
-        config.B0 = config.B_ref
+    # 统一使用 load_gene_config_from_parameters 以确保单位处理一致
+    # 这样可以避免两套逻辑导致 m_ref / n_ref / rho_ref 不一致的问题
+    return load_gene_config_from_parameters(parameters_file, equilibrium_dir, device)
 
 
 def load_beam_config(ls_condition_file: str) -> BeamConfig:
@@ -546,14 +293,14 @@ def load_equdata_BZ(
         GFC2 = np.fromfile(f, dtype='<f8', count=NSGMAX * NTGMAX)
         GQPS = np.fromfile(f, dtype='<f8', count=NSGMAX)
     
-    # Reshape坐标数据
+    # Reshape坐标数据（MATLAB按列主序存储，需要使用Fortran顺序）
     GRCt = np.zeros((NSGMAX, NTGMAX + 1))
     GZCt = np.zeros((NSGMAX, NTGMAX + 1))
     GFCt = np.zeros((NSGMAX, NTGMAX + 1))
     
-    GRCt[:, :NTGMAX] = GRC2.reshape(NSGMAX, NTGMAX)
-    GZCt[:, :NTGMAX] = GZC2.reshape(NSGMAX, NTGMAX)
-    GFCt[:, :NTGMAX] = GFC2.reshape(NSGMAX, NTGMAX)
+    GRCt[:, :NTGMAX] = GRC2.reshape(NSGMAX, NTGMAX, order='F')
+    GZCt[:, :NTGMAX] = GZC2.reshape(NSGMAX, NTGMAX, order='F')
+    GFCt[:, :NTGMAX] = GFC2.reshape(NSGMAX, NTGMAX, order='F')
     
     # 径向插值：从NSGMAX到IRMAX
     GRCt2 = np.zeros((IRMAX + 1, NTGMAX + 1))
@@ -577,14 +324,18 @@ def load_equdata_BZ(
         # Python: s1:s2+1 包含s1到s2，共(s2-s1+1)个元素
         n_pts = s2 - s1 + 1
         if n_pts > 0:
-            # MATLAB: ([s1:s2]-1) 对索引数组的每个元素减1
-            # Python: np.arange(s1, s2+1) - 1
-            indices_minus_1 = np.arange(s1, s2 + 1) - 1
+            # MATLAB: ([s1:s2]-1) 从1-based索引转换为0-based索引
+            # MATLAB中s1和s2是从1开始的，[s1:s2]是[s1, s1+1, ..., s2]
+            # ([s1:s2]-1)是[s1-1, s1, ..., s2-1]，这是0-based索引
+            # Python中s1和s2已经是0-based，所以np.arange(s1, s2+1)已经对应MATLAB的([s1:s2]-1)
+            # 不需要再减1，否则会整体平移一格
+            rows = np.arange(s1, s2 + 1)  # 0-based，对应MATLAB的([s1:s2]-1)
+            aM = a + 1  # MATLAB的a（1-based）
             
             # MATLAB: w1=(a-([s1:s2]-1)*NSG/IRMAX).'*ones(1,NTGMAX+1);
-            w1 = ((a + 1) - indices_minus_1 * NSG / IRMAX)[:, np.newaxis]
+            w1 = (aM - rows * NSG / IRMAX)[:, np.newaxis]
             # MATLAB: w2=-(a-1-([s1:s2]-1)*NSG/IRMAX).'*ones(1,NTGMAX+1);
-            w2 = -(a - indices_minus_1 * NSG / IRMAX)[:, np.newaxis]
+            w2 = (-(aM - 1 - rows * NSG / IRMAX))[:, np.newaxis]
             
             # MATLAB: GRCt2(s1:s2,:)=ones(s2-s1+1,1)*GRCt(a,:).*w1 + ones(s2-s1+1,1)*GRCt(a+1,:).*w2;
             GRCt2[s1:s2 + 1, :] = w1 * GRCt[a, :] + w2 * GRCt[a + 1, :]
@@ -645,17 +396,20 @@ def load_equdata_BZ(
             if s1 >= 0 and s2_new >= 0 and s1 <= ITGMAX and s2_new <= ITGMAX and s2_new >= s1:
                 n_pts = s2_new - s1 + 1
                 if n_pts > 0:
-                    # MATLAB: ([s1:s2]-1) 对索引数组的每个元素减1
-                    # Python: np.arange(s1, s2+1) - 1
-                    indices_minus_1 = np.arange(s1, s2_new + 1) - 1
+                    # MATLAB: ([s1:s2]-1) 从1-based索引转换为0-based索引
+                    # MATLAB中s1和s2是从1开始的，[s1:s2]是[s1, s1+1, ..., s2]
+                    # ([s1:s2]-1)是[s1-1, s1, ..., s2-1]，这是0-based索引
+                    # Python中s1和s2_new已经是0-based，所以np.arange(s1, s2_new+1)已经对应MATLAB的([s1:s2]-1)
+                    # 不需要再减1，否则会整体平移一格
+                    cols = np.arange(s1, s2_new + 1)  # 0-based，对应MATLAB的([s1:s2]-1)
                     
                     # 避免除零错误
                     denom = GTC_c_t[b, a + 1] - GTC_c_t[b, a]
                     if abs(denom) >= 1e-10:
                         # MATLAB: w1=(GTC_c_t(b,a+1)-([s1:s2]-1)*dtheta2)/(GTC_c_t(b,a+1)-GTC_c_t(b,a));
-                        w1 = (GTC_c_t[b, a + 1] - indices_minus_1 * dtheta2) / denom
+                        w1 = (GTC_c_t[b, a + 1] - cols * dtheta2) / denom
                         # MATLAB: w2=-(GTC_c_t(b,a)-([s1:s2]-1)*dtheta2)/(GTC_c_t(b,a+1)-GTC_c_t(b,a));
-                        w2 = -(GTC_c_t[b, a] - indices_minus_1 * dtheta2) / denom
+                        w2 = -(GTC_c_t[b, a] - cols * dtheta2) / denom
                         
                         # MATLAB: GRC(b,s1:s2)=GRCt2(b,a)*ones(1,s2-s1+1).*w1 + GRCt2(b,a+1)*ones(1,s2-s1+1).*w2;
                         GRC[b, s1:s2_new + 1] = GRCt2[b, a] * w1 + GRCt2[b, a + 1] * w2
@@ -674,32 +428,9 @@ def load_equdata_BZ(
     GFC[:, -1] = GFCt2[:, -1]
     GTC_c[:, -1] = 2.0 * np.pi
     
-    # 计算minor radius
-    print(f"DEBUG3: PA = [{PA[0]:.6f}, {PA[1]:.6f}]")
-    print(f"DEBUG3: GRC形状 = {GRC.shape}")
-    print(f"DEBUG3: GRC范围 = [{np.min(GRC):.6f}, {np.max(GRC):.6f}]")
-    print(f"DEBUG3: GZC范围 = [{np.min(GZC):.6f}, {np.max(GZC):.6f}]")
-    
-    # 计算minor radius - 使用原始平衡态坐标计算，更接近MATLAB
-    GAC_raw = np.sqrt((GRCt2 - PA[0])**2 + (GZCt2 - PA[1])**2)
-    
-    # 进行周期性填充（MATLAB中GAC(:,end) = GAC(:,1)）
-    GAC_padded = np.concatenate([GAC_raw, GAC_raw[:, 0:1]], axis=1)
-    
-    # 如果需要更大的网格，进行最邻近插值
-    if GAC_padded.shape != (IRMAX + 1, ITGMAX + 1):
-        GAC = np.zeros((IRMAX + 1, ITGMAX + 1))
-        for i in range(IRMAX + 1):
-            for j in range(ITGMAX + 1):
-                i_old = min(int(round(i * (GAC_padded.shape[0] - 1) / IRMAX)), GAC_padded.shape[0] - 1)
-                j_old = min(int(round(j * (GAC_padded.shape[1] - 1) / ITGMAX)), GAC_padded.shape[1] - 1)
-                GAC[i, j] = GAC_padded[i_old, j_old]
-    else:
-        GAC = GAC_padded
-    
-    print(f"DEBUG3: 最终GAC形状 = {GAC.shape}")
-    print(f"DEBUG3: 最终GAC范围 = [{np.min(GAC):.6f}, {np.max(GAC):.6f}]")
-    print(f"DEBUG3: 最终GAC最后一层 = [{np.min(GAC[-1,:]):.6f}, {np.max(GAC[-1,:]):.6f}]")
+    # 计算minor radius - 直接使用最终的GRC和GZC，与MATLAB一致
+    # MATLAB: obj.GAC = sqrt((GRC-PA(1)).^2 + (GZC-PA(2)).^2);
+    GAC = np.sqrt((GRC - PA[0])**2 + (GZC - PA[1])**2)
     
     # 转换为Tensor
     result = {
@@ -856,11 +587,44 @@ def load_equilibrium_data(
     return eq_data
 
 
+def peek_parameters_header(path: str):
+    """
+    调试函数：检查parameters.dat文件头部
+    
+    用于判断文件开头是否有二进制int（RET），对应MATLAB的：
+    RET = fread(fid, 1, 'int');
+    
+    Args:
+        path: parameters.dat文件路径
+    """
+    with open(path, 'rb') as f:
+        raw4 = f.read(4)
+        print("前4字节 raw =", raw4)
+        print("前4字节 hex =", raw4.hex())
+        if len(raw4) == 4:
+            # 尝试解析为int32 (little-endian和big-endian)
+            int_le = int.from_bytes(raw4, byteorder='little', signed=True)
+            int_be = int.from_bytes(raw4, byteorder='big', signed=True)
+            print(f"解析为int32 (little-endian) = {int_le}")
+            print(f"解析为int32 (big-endian) = {int_be}")
+            # 尝试解析为ASCII
+            try:
+                ascii_str = raw4.decode('ascii', errors='replace')
+                print(f"解析为ASCII = {repr(ascii_str)}")
+            except:
+                print("无法解析为ASCII")
+    
+    with open(path, 'r', errors='replace') as f:
+        first_line = f.readline()
+        print("第一行(文本模式) =", repr(first_line))
+
+
 def parse_parameters_dat(file_path: str) -> Dict[str, any]:
     """
     解析parameters.dat文件（GENE namelist格式）
     
     基于MATLAB的fread_param2.m
+    注意：MATLAB版本会先读取一个4字节的int（RET），然后才开始读取文本
     
     Args:
         file_path: parameters.dat文件路径
@@ -871,7 +635,31 @@ def parse_parameters_dat(file_path: str) -> Dict[str, any]:
     param_dict = {}
     current_section = ''
     
-    with open(file_path, 'r') as f:
+    # 尝试检测并跳过可能的二进制int头部（MATLAB的RET）
+    # 先以二进制模式读取前4字节，检查是否是文本
+    skip_bytes = 0
+    with open(file_path, 'rb') as f_bin:
+        first_4_bytes = f_bin.read(4)
+        # 检查前4字节是否看起来像文本（ASCII可打印字符或&开头）
+        if len(first_4_bytes) == 4:
+            try:
+                # 尝试解码为ASCII
+                text_start = first_4_bytes.decode('ascii', errors='strict')
+                # 如果第一个字符是&或可打印ASCII，说明是文本，不需要跳过
+                if text_start[0] == '&' or (32 <= ord(text_start[0]) <= 126):
+                    skip_bytes = 0
+                else:
+                    # 不是文本开头，可能是二进制int，需要跳过
+                    skip_bytes = 4
+            except:
+                # 解码失败，可能是二进制int，需要跳过
+                skip_bytes = 4
+    
+    # 以文本模式打开，如果需要则跳过前4字节
+    with open(file_path, 'r', errors='replace') as f:
+        if skip_bytes > 0:
+            f.seek(skip_bytes)  # 跳过前4字节（对应MATLAB的RET）
+        
         for line in f:
             line = line.strip()
             
@@ -896,13 +684,15 @@ def parse_parameters_dat(file_path: str) -> Dict[str, any]:
                     value_str = key_value[1].strip().rstrip(',')
                     
                     # 尝试转换为数值
+                    # 先清理字符串：处理Fortran的D指数（D -> E）
+                    value_str_clean = value_str.strip().upper().replace('D', 'E')
                     try:
                         # 尝试整数
-                        if '.' not in value_str and 'e' not in value_str.lower():
-                            value = int(value_str)
+                        if '.' not in value_str_clean and 'E' not in value_str_clean:
+                            value = int(value_str_clean)
                         else:
-                            # 浮点数
-                            value = float(value_str)
+                            # 浮点数（支持E指数，包括从D转换来的）
+                            value = float(value_str_clean)
                     except ValueError:
                         # 保持为字符串（去除引号）
                         value = value_str.strip('"').strip("'")
@@ -1017,7 +807,32 @@ def load_gene_config_from_parameters(
     
     # 重要：重新计算物理参数，因为可能使用了错误的m_ref初始值
     config.compute_physics_params()
-    
+
+    # ===== 关键：按照 MATLAB fread_param2 计算 inside / outside / IRMAX =====
+    # 对应 MATLAB：
+    # minor_r = 1.18
+    # IN  = (trpeps*major_R*L_ref/(rho_ref*lx) - 1/2) * nx0;
+    # OUT = ((minor_r - trpeps*major_R*L_ref)/(rho_ref*lx) - 1/2) * nx0;
+    # inside  = round(IN); outside = round(OUT); IRMAX = nx0;
+    try:
+        needed = [config.trpeps, config.major_R, config.L_ref,
+                  config.rho_ref, config.lx, config.nx0]
+        if all(v is not None for v in needed):
+            minor_r = 1.18
+            IN = (config.trpeps * config.major_R * config.L_ref /
+                  (config.rho_ref * config.lx) - 0.5) * config.nx0
+            OUT = ((minor_r - config.trpeps * config.major_R * config.L_ref) /
+                   (config.rho_ref * config.lx) - 0.5) * config.nx0
+
+            config.inside = int(round(IN))
+            config.outside = int(round(OUT))
+            config.IRMAX = config.nx0
+        else:
+            # 如果有什么缺的，保持默认值（inside/outside=0）
+            pass
+    except Exception as e:
+        print(f"[WARN] failed to compute inside/outside: {e}")
+
     # 加载equilibrium数据（如果提供）
     if equilibrium_dir:
         eq_data = load_equilibrium_data(equilibrium_dir, config, device)
