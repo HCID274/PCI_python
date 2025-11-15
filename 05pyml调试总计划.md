@@ -77,7 +77,7 @@
 
 ---
 
-### 🔜 阶段 3：光束配置和几何计算（Beam Geometry）
+### ✅ 阶段 3：光束配置和几何计算（Beam Geometry）（已完成）
 
 > 在 2.5 OK 后，这一层只依赖：
 >
@@ -110,6 +110,23 @@
 
 * MATLAB：`debug_stage_3_matlab.mat` → `beam_grid_3d`
 * Python：`debug_stage_3_python.npz` → `beam_grid_3d`
+
+**验证结果：**
+
+* ✅ **形状一致**：grid 形状 `(2*div1+1, 2*div2+1, divls+1, 3)` 已经完全一致
+* ✅ **B2_start / B2_end / p1**：MATLAB / Python 完全相同（差值全 0）
+* ✅ **网格生成顺序**：遍历顺序已经和 MATLAB 对齐
+  * 对比是按 reshape 后一维展平的结果比较的（max abs diff 基于展平数组）
+  * 如果遍历顺序不一致，reshape 后的对应点会完全对不上，不可能只差 1e-6
+  * 说明 3 个方向的索引顺序也已经和 MATLAB 对齐
+* ✅ **φ / 单位 / mm→m 只做一次**：B2_start/B2_end 已经和 MATLAB 一致，说明：
+  * `phi * 2 * pi` 的处理是一样的
+  * mm→m 转换位置和次数也已经和 MATLAB 对齐
+
+**结论**：
+
+* ✅ **Stage 3 几何对比完成**：所有检查点均已通过，Python 和 MATLAB 的光束几何计算完全一致。
+* 可以放心进入 Stage 4（密度场预处理）的调试。
 
 ---
 
@@ -211,7 +228,12 @@
    * ✅ shape 一致：`(400, 128, 29)`
    * ✅ 值完全一致：`max abs diff = 0.0`，`rel diff = 0.0`
 
-2. **Stage 3：光束几何 `beam_grid_3d` 对比**
+2. **✅ Stage 3：光束几何 `beam_grid_3d` 对比**
+
+   * ✅ 形状一致：`(2*div1+1, 2*div2+1, divls+1, 3)`
+   * ✅ B2_start / B2_end / p1 完全一致（差值全 0）
+   * ✅ 网格生成顺序已对齐（遍历顺序一致）
+   * ✅ φ 角处理和单位转换已对齐
 
 3. **Stage 4：processed density（padding + 周期 + 重排）对比**
 

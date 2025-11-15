@@ -13,7 +13,8 @@ from .config import BeamConfig, GENEConfig
 def compute_beam_grid(
     beam_config: BeamConfig,
     config: GENEConfig = None,
-    device: str = 'cuda'
+    device: str = 'cuda',
+    debug: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     计算光束网格的所有采样点（笛卡尔坐标）
@@ -22,7 +23,9 @@ def compute_beam_grid(
     
     Args:
         beam_config: 光束配置
+        config: GENE配置（可选）
         device: PyTorch设备
+        debug: 是否输出调试信息和保存文件（默认False）
     
     Returns:
         字典包含:
@@ -31,167 +34,113 @@ def compute_beam_grid(
             - 'beam_vector': (3,) 光束方向单位向量
             - 'perpendicular_vectors': (2, 3) 两个垂直向量
     """
-    # ==============================================================================
-    # 增强输出1: 原始光束配置数据
-    # ==============================================================================
-    print(f'\n=== PYTHON BEAM CONFIG DATA ===')
-    print(f'注入点: {beam_config.injection_point}')
-    print(f'检测点: {beam_config.detection_point}')
-    print(f'width_vertical: {beam_config.width_vertical} m')
-    print(f'width_toroidal: {beam_config.width_toroidal} m')
-    print(f'div_vertical: {beam_config.div_vertical}')
-    print(f'div_toroidal: {beam_config.div_toroidal}')
-    print(f'div_beam: {beam_config.div_beam}')
-    
-    # MATLAB 第62-70行: 坐标转换
-    # B1(1,:) = pp1(1:3) - 起点 (R[m], Z[m], phi[0-1])
-    # B1(2,:) = pp1(4:6) - 终点
-    # ✅ 修正: BeamConfig中已经是米单位，不需要再除以1000
-    B1_start = np.array([
-        beam_config.injection_point[0],  # R [m] (已经是转换后的)
-        beam_config.injection_point[2],  # phi [0-1] (修正: 应该是phi)
-        beam_config.injection_point[1]   # Z [m] (修正: 应该是Z)
-    ])
-    B1_end = np.array([
-        beam_config.detection_point[0],   # R [m] (已经是转换后的)
-        beam_config.detection_point[2],   # phi [0-1] (修正: 应该是phi)
-        beam_config.detection_point[1]    # Z [m] (修正: 应该是Z)
-    ])
-    
-    # ==============================================================================
-    # 增强输出2: 坐标转换 (R,Z,phi) -> (X,Y,Z)
-    # ==============================================================================
-    print(f'\n=== PYTHON COORDINATE CONVERSION ===')
-    print(f'B1_start (原始坐标m): [{B1_start[0]:.6f}, {B1_start[1]:.6f}, {B1_start[2]:.6f}]')
-    print(f'B1_end (原始坐标m): [{B1_end[0]:.6f}, {B1_end[1]:.6f}, {B1_end[2]:.6f}]')
-    
-    # B2(:,1) = B1(:,1).*cos(2*pi*B1(:,2)) - X坐标 (R * cos(2π * phi))
-    # B2(:,2) = B1(:,1).*sin(2*pi*B1(:,2)) - Y坐标 (R * sin(2π * phi))  
-    # B2(:,3) = B1(:,3) - Z坐标
-    # ✅ 修正: B1已经是m单位，但仍需要保持与MATLAB一致的逻辑
-    # 关键修正: B2_start应该是注入点，B2_end应该是检测点
-    B2_start = np.array([
-        B1_start[0] * np.cos(2 * np.pi * B1_start[1]),  # 注入点的笛卡尔坐标 (R * cos(2π * phi))
-        B1_start[0] * np.sin(2 * np.pi * B1_start[1]),
-        B1_start[2]  # Z坐标
-    ])
-    
-    B2_end = np.array([
-        B1_end[0] * np.cos(2 * np.pi * B1_end[1]),     # 检测点的笛卡尔坐标 (R * cos(2π * phi))
-        B1_end[0] * np.sin(2 * np.pi * B1_end[1]),
-        B1_end[2]  # Z坐标
-    ])
-    
-    # 注意: Python中已经在data_loader.py中处理了毫米到米的转换
-    # injection_point = (coords[0] / 1000.0, coords[1] / 1000.0, coords[2])
-    # 因此B1_start已经是米单位，不需要再除以1000
-    
-    print(f'B2_start (转换后坐标): [{B2_start[0]:.6f}, {B2_start[1]:.6f}, {B2_start[2]:.6f}]')
-    print(f'B2_end (转换后坐标): [{B2_end[0]:.6f}, {B2_end[1]:.6f}, {B2_end[2]:.6f}]')
-    
-    # 转换为torch tensor - DEBUG: 修复设备初始化问题
+    # ======================================================================
+    # 1. 从 BeamConfig 直接拿 (R[m], Z[m], phi[0-1])
+    # ======================================================================
+    R_inj, Z_inj, phi_inj = beam_config.injection_point
+    R_det, Z_det, phi_det = beam_config.detection_point
+
+    if debug:
+        print(f'\n=== PYTHON BEAM CONFIG DATA ===')
+        print(f'注入点 (R,Z,phi) [m]: ({R_inj:.6f}, {Z_inj:.6f}, {phi_inj:.6f})')
+        print(f'检测点 (R,Z,phi) [m]: ({R_det:.6f}, {Z_det:.6f}, {phi_det:.6f})')
+        print(f'width_vertical = {beam_config.width_vertical} m')
+        print(f'width_toroidal = {beam_config.width_toroidal} m')
+        print(f'div_vertical   = {beam_config.div_vertical}')
+        print(f'div_toroidal   = {beam_config.div_toroidal}')
+        print(f'div_beam       = {beam_config.div_beam}')
+
+    # ======================================================================
+    # 2. 和 MATLAB 完全一致的柱坐标 -> 笛卡尔坐标变换
+    #    B2(1,:) = 注入点, B2(2,:) = 检测点
+    #    B2(:,1) = R*cos(2*pi*phi)
+    #    B2(:,2) = R*sin(2*pi*phi)
+    #    B2(:,3) = Z
+    # ======================================================================
+    B2_start_np = np.array([
+        R_inj * np.cos(2 * np.pi * phi_inj),
+        R_inj * np.sin(2 * np.pi * phi_inj),
+        Z_inj
+    ], dtype=np.float64)
+
+    B2_end_np = np.array([
+        R_det * np.cos(2 * np.pi * phi_det),
+        R_det * np.sin(2 * np.pi * phi_det),
+        Z_det
+    ], dtype=np.float64)
+
+    if debug:
+        print(f'\n=== PYTHON COORDINATE CONVERSION ===')
+        print(f'B2_start (注入点, m): [{B2_start_np[0]:.6f}, {B2_start_np[1]:.6f}, {B2_start_np[2]:.6f}]')
+        print(f'B2_end   (检测点, m): [{B2_end_np[0]:.6f}, {B2_end_np[1]:.6f}, {B2_end_np[2]:.6f}]')
+
+    # 转成 torch
     try:
-        B2_start = torch.as_tensor(B2_start, dtype=torch.float64, device=device).clone()
-        B2_end = torch.as_tensor(B2_end, dtype=torch.float64, device=device).clone()
+        B2_start = torch.as_tensor(B2_start_np, dtype=torch.float64, device=device).clone()
+        B2_end   = torch.as_tensor(B2_end_np,   dtype=torch.float64, device=device).clone()
     except RuntimeError as e:
         if "Found no NVIDIA driver" in str(e) or "HIP" in str(e):
             print("警告: 检测到GPU驱动问题，切换到CPU模式")
             device = 'cpu'
-            B2_start = torch.as_tensor(B2_start, dtype=torch.float64, device=device).clone()
-            B2_end = torch.as_tensor(B2_end, dtype=torch.float64, device=device).clone()
-    
-    # MATLAB 第71-74行: 计算光束长度
-    # b2ls = sqrt((B2(1,1)-B2(2,1))^2 + (B2(1,2)-B2(2,2))^2 + (B2(1,3)-B2(2,3))^2)
-    
-    # 🔧 修复numpy/torch混用问题：确保计算使用torch张量
-    diff_x = B2_start[0] - B2_end[0]
-    diff_y = B2_start[1] - B2_end[1] 
-    diff_z = B2_start[2] - B2_end[2]
-    
-    # 确保差值是torch.tensor类型
-    if not isinstance(diff_x, torch.Tensor):
-        diff_x = torch.as_tensor(diff_x, device=device, dtype=torch.float64).clone()
-    if not isinstance(diff_y, torch.Tensor):
-        diff_y = torch.as_tensor(diff_y, device=device, dtype=torch.float64).clone()
-    if not isinstance(diff_z, torch.Tensor):
-        diff_z = torch.as_tensor(diff_z, device=device, dtype=torch.float64).clone()
-    
-    b2ls = torch.sqrt(diff_x**2 + diff_y**2 + diff_z**2)
-    
-    # MATLAB 第76-78行: 计算光束方向向量
-    # ⚠️ 关键修正: MATLAB中p1 = B2(起点) - B2(终点) = 从终点指向起点！
-    # 与我们之前理解的B2_end - B2_start相反
-    p1 = torch.zeros(3, dtype=torch.float64, device=device)
-    p1[0] = B2_start[0] - B2_end[0]  # 修正: 与MATLAB一致 - 从终点指向起点
-    p1[1] = B2_start[1] - B2_end[1]
-    p1[2] = B2_start[2] - B2_end[2]
-    
-    # ==============================================================================
-    # 增强输出3: 光束方向向量
-    # ==============================================================================
-    print(f'\n=== PYTHON BEAM VECTOR ===')
-    print(f'p1 (B2_end - B2_start): [{p1[0]:.6f}, {p1[1]:.6f}, {p1[2]:.6f}]')
-    print(f'p1 magnitude: {torch.norm(p1):.6f}')
-    print(f'b2ls (光束总长度): {b2ls:.6f}')
-    
-    # 计算单位向量
-    p1_unit = p1 / torch.norm(p1)
-    
-    # MATLAB 第80-102行: 计算垂直向量
+            B2_start = torch.as_tensor(B2_start_np, dtype=torch.float64, device=device).clone()
+            B2_end   = torch.as_tensor(B2_end_np,   dtype=torch.float64, device=device).clone()
+
+    # ======================================================================
+    # 3. 光束方向向量 p1 = B2(1,:) - B2(2,:)  (完全照抄 MATLAB)
+    # ======================================================================
+    p1 = B2_start - B2_end          # (3,)
+    b2ls = torch.norm(p1)           # 总长度
+    p1_unit = p1 / b2ls
+
+    if debug:
+        print(f'\n=== PYTHON BEAM VECTOR ===')
+        print(f'p1        : [{p1[0]:.6f}, {p1[1]:.6f}, {p1[2]:.6f}]')
+        print(f'|p1|=b2ls : {b2ls:.6f}')
+
+    # ======================================================================
+    # 4. 垂直向量 xl(1,:), xl(2,:) —— 和 LSview_com 完全同式
+    #    注意：这里 phi 用的是注入点的 phi_inj
+    # ======================================================================
     xl = torch.zeros(2, 3, dtype=torch.float64, device=device)
     wid1 = beam_config.width_vertical
     wid2 = beam_config.width_toroidal
-    
-    # 使用原始 phi 值 B1(1,3)，范围 [0-1]
-    phi_raw = B1_start[2]  # 原始 phi 值，范围 [0-1]
-    
-    # ==============================================================================
-    # 增强输出4: 垂直向量计算
-    # ==============================================================================
-    print(f'\n=== PYTHON PERPENDICULAR VECTORS ===')
-    
-    # 检查光束是否垂直（p1(1)==0 && p1(2)==0）
-    if torch.abs(p1[0]) < 1e-10 and torch.abs(p1[1]) < 1e-10:
-        # MATLAB 第81-86行: 垂直光束的情况
-        print(f'  垂直光束情况')
-        phi_rad = 2 * np.pi * phi_raw
+
+    phi_raw = phi_inj                     # [0,1]
+    phi_rad = 2.0 * np.pi * phi_raw
+    tan_phi = np.tan(phi_rad)
+    tan_phi_t = torch.as_tensor(tan_phi, dtype=torch.float64, device=device)
+
+    if debug:
+        print(f'\n=== PYTHON PERPENDICULAR VECTORS ===')
+
+    if torch.abs(p1[0]) < 1e-12 and torch.abs(p1[1]) < 1e-12:
+        # 垂直光束情况 (和 MATLAB if 分支一致)
         xl[0, 0] = wid1 / 2.0 * np.cos(phi_rad)
         xl[0, 1] = wid1 / 2.0 * np.sin(phi_rad)
         xl[0, 2] = 0.0
+
         xl[1, 0] = -wid2 / 2.0 * np.sin(phi_rad)
-        xl[1, 1] = wid2 / 2.0 * np.cos(phi_rad)
+        xl[1, 1] =  wid2 / 2.0 * np.cos(phi_rad)
         xl[1, 2] = 0.0
     else:
-        # MATLAB 第87-101行: 一般情况
-        print(f'  一般光束情况')
-        phi_rad = 2 * np.pi * phi_raw
-        tan_phi = np.tan(phi_rad)
-        tan_phi_t = torch.as_tensor(tan_phi, dtype=torch.float64, device=device).clone()
-        
-        # 第一个垂直向量（MATLAB第88-94行）
+        # 一般情况：照抄 LSview_com 87–101 行
         xl[0, 0] = p1[2]
         xl[0, 1] = p1[2] * tan_phi_t
         xl[0, 2] = -(p1[0] + p1[1] * tan_phi_t)
-        xl0 = 1.0 / torch.norm(xl[0]) * (wid1 / 2.0)
-        xl[0, 0] = xl[0, 0] * xl0
-        xl[0, 1] = xl[0, 1] * xl0
-        xl[0, 2] = xl[0, 2] * xl0
-        
-        # 第二个垂直向量（MATLAB第95-101行）
+        xl0 = (wid1 / 2.0) / torch.norm(xl[0])
+        xl[0] = xl[0] * xl0
+
         xl[1, 0] = p1[0] * p1[1] + (p1[1]**2 + p1[2]**2) * tan_phi_t
         xl[1, 1] = -p1[0]**2 - p1[2]**2 - p1[0] * p1[1] * tan_phi_t
         xl[1, 2] = p1[1] * p1[2] - p1[0] * p1[2] * tan_phi_t
-        xl0 = 1.0 / torch.norm(xl[1]) * (wid2 / 2.0)
-        xl[1, 0] = xl[1, 0] * xl0
-        xl[1, 1] = xl[1, 1] * xl0
-        xl[1, 2] = xl[1, 2] * xl0
-    
-    print(f'xl[0,:] (垂直向量1): [{xl[0,0]:.6f}, {xl[0,1]:.6f}, {xl[0,2]:.6f}]')
-    print(f'xl[1,:] (垂直向量2): [{xl[1,0]:.6f}, {xl[1,1]:.6f}, {xl[1,2]:.6f}]')
-    print(f'xl[0,:] magnitude: {torch.norm(xl[0]):.6f}')
-    print(f'xl[1,:] magnitude: {torch.norm(xl[1]):.6f}')
-    
-    # 计算单位向量（用于返回）
+        xl0 = (wid2 / 2.0) / torch.norm(xl[1])
+        xl[1] = xl[1] * xl0
+
+    if debug:
+        print(f'xl(1,:) = [{xl[0,0]:.6f}, {xl[0,1]:.6f}, {xl[0,2]:.6f}], |xl1|={torch.norm(xl[0]):.6f}')
+        print(f'xl(2,:) = [{xl[1,0]:.6f}, {xl[1,1]:.6f}, {xl[1,2]:.6f}], |xl2|={torch.norm(xl[1]):.6f}')
+
+    # 单位向量（仅用于返回）
     xl_unit = torch.zeros_like(xl)
     xl_unit[0] = xl[0] / torch.norm(xl[0])
     xl_unit[1] = xl[1] / torch.norm(xl[1])
@@ -208,15 +157,16 @@ def compute_beam_grid(
     # 注意：MATLAB 中 b2ls 被重新赋值为步长
     b2ls_step = b2ls / divls
     
-    # ==============================================================================
-    # 增强输出5: 网格尺寸信息
-    # ==============================================================================
-    print(f'\n=== PYTHON GRID DIMENSIONS ===')
-    print(f'div1_2 (垂直网格点数): {div1_2}')
-    print(f'div2_2 (环向网格点数): {div2_2}')
-    print(f'divls_2 (光束方向点数): {divls_2}')
-    print(f'总网格点数: {div1_2 * div2_2 * divls_2}')
-    print(f'b2ls/divls (步长): {b2ls_step:.6f}')
+    if debug:
+        # ==============================================================================
+        # 增强输出5: 网格尺寸信息
+        # ==============================================================================
+        print(f'\n=== PYTHON GRID DIMENSIONS ===')
+        print(f'div1_2 (垂直网格点数): {div1_2}')
+        print(f'div2_2 (环向网格点数): {div2_2}')
+        print(f'divls_2 (光束方向点数): {divls_2}')
+        print(f'总网格点数: {div1_2 * div2_2 * divls_2}')
+        print(f'b2ls/divls (步长): {b2ls_step:.6f}')
     
     # MATLAB 第108-111行: 初始化网格（从检测点开始）
     # ⚠️ 关键修正: 应该从检测点(B2_end)开始，不是注入点(B2_start)
@@ -224,8 +174,9 @@ def compute_beam_grid(
     yls = torch.ones(div1_2, div2_2, divls_2, device=device) * B2_end[1]
     zls = torch.ones(div1_2, div2_2, divls_2, device=device) * B2_end[2]
     
-    print(f'\n=== PYTHON GRID INITIALIZATION ===')
-    print(f'初始网格从B2_end开始 (检测点): [{B2_end[0]:.6f}, {B2_end[1]:.6f}, {B2_end[2]:.6f}]')
+    if debug:
+        print(f'\n=== PYTHON GRID INITIALIZATION ===')
+        print(f'初始网格从B2_end开始 (检测点): [{B2_end[0]:.6f}, {B2_end[1]:.6f}, {B2_end[2]:.6f}]')
     
     # MATLAB 第113-118行: 添加垂直方向1的偏移
     # MATLAB: for j=1:div1_2, replix(j,:,:)=ones(div2_2,divls_2)*(real(j-1)-div1)/div1
@@ -262,22 +213,23 @@ def compute_beam_grid(
     yls1 = yls.reshape(div1_2 * div2_2 * divls_2)
     zls1 = zls.reshape(div1_2 * div2_2 * divls_2)
     
-    # ==============================================================================
-    # 增强输出6: 网格点样本
-    # ==============================================================================
-    print(f'\n=== PYTHON GRID SAMPLES ===')
-    print(f'前5个网格点:')
-    for i in range(min(5, len(xls1))):
-        print(f'  点{i+1}: [{xls1[i]:.6f}, {yls1[i]:.6f}, {zls1[i]:.6f}]')
-    print(f'后5个网格点:')
-    for i in range(max(0, len(xls1)-5), len(xls1)):
-        print(f'  点{i+1}: [{xls1[i]:.6f}, {yls1[i]:.6f}, {zls1[i]:.6f}]')
+    if debug:
+        # ==============================================================================
+        # 增强输出6: 网格点样本
+        # ==============================================================================
+        print(f'\n=== PYTHON GRID SAMPLES ===')
+        print(f'前5个网格点:')
+        for i in range(min(5, len(xls1))):
+            print(f'  点{i+1}: [{xls1[i]:.6f}, {yls1[i]:.6f}, {zls1[i]:.6f}]')
+        print(f'后5个网格点:')
+        for i in range(max(0, len(xls1)-5), len(xls1)):
+            print(f'  点{i+1}: [{xls1[i]:.6f}, {yls1[i]:.6f}, {zls1[i]:.6f}]')
     
     # 堆叠成网格
     grid_xyz = torch.stack([xls, yls, zls], dim=-1)  # (div1_2, div2_2, divls_2, 3)
     
     # 🔧 关键修复: 保持beam坐标为物理坐标，不应用L_ref缩放
-    if config is not None and hasattr(config, 'L_ref') and config.L_ref is not None:
+    if debug and config is not None and hasattr(config, 'L_ref') and config.L_ref is not None:
         print(f'\n=== L_REF SCALING NOT APPLIED (BEAM IN PHYSICAL UNITS) ===')
         print(f'L_ref: {config.L_ref:.6f}')
         print(f'grid_xyz范围: [{grid_xyz.min():.6f}, {grid_xyz.max():.6f}]')
@@ -287,31 +239,32 @@ def compute_beam_grid(
     # 展平为 (N, 3)
     grid_flat = torch.stack([xls1, yls1, zls1], dim=-1)  # (N, 3)
     
-    # ==============================================================================
-    # 增强输出7: 保存关键数据到文件
-    # ==============================================================================
-    print(f'\n=== SAVING PYTHON DATA ===')
-    
-    # 保存到文件用于对比
-    try:
-        # 保存numpy格式
-        np.save('/tmp/python_beam_grid.npy', grid_xyz.cpu().numpy())
-        np.save('/tmp/python_grid_flat.npy', grid_flat.cpu().numpy())
-        np.save('/tmp/python_beam_start.npy', B2_start.cpu().numpy())
-        np.save('/tmp/python_beam_end.npy', B2_end.cpu().numpy())
-        np.save('/tmp/python_beam_vector.npy', p1.cpu().numpy())
-        np.save('/tmp/python_perp_vectors.npy', xl.cpu().numpy())
+    if debug:
+        # ==============================================================================
+        # 增强输出7: 保存关键数据到文件
+        # ==============================================================================
+        print(f'\n=== SAVING PYTHON DATA ===')
         
-        # 保存CSV格式便于查看
-        grid_data_np = grid_flat.cpu().numpy()
-        np.savetxt('/tmp/python_grid_points.csv', grid_data_np, delimiter=',', 
-                   header='X,Y,Z', comments='')
+        # 保存到文件用于对比
+        try:
+            # 保存numpy格式
+            np.save('/tmp/python_beam_grid.npy', grid_xyz.cpu().numpy())
+            np.save('/tmp/python_grid_flat.npy', grid_flat.cpu().numpy())
+            np.save('/tmp/python_beam_start.npy', B2_start.cpu().numpy())
+            np.save('/tmp/python_beam_end.npy', B2_end.cpu().numpy())
+            np.save('/tmp/python_beam_vector.npy', p1.cpu().numpy())
+            np.save('/tmp/python_perp_vectors.npy', xl.cpu().numpy())
+            
+            # 保存CSV格式便于查看
+            grid_data_np = grid_flat.cpu().numpy()
+            np.savetxt('/tmp/python_grid_points.csv', grid_data_np, delimiter=',', 
+                       header='X,Y,Z', comments='')
+            
+            print('Python数据已保存到 /tmp/python_*.npy 和 /tmp/python_*.csv')
+        except Exception as e:
+            print(f'保存数据时出错: {e}')
         
-        print('Python数据已保存到 /tmp/python_*.npy 和 /tmp/python_*.csv')
-    except Exception as e:
-        print(f'保存数据时出错: {e}')
-    
-    print('=== PYTHON EXECUTION COMPLETE ===')
+        print('=== PYTHON EXECUTION COMPLETE ===')
     
     return {
         'grid_xyz': grid_xyz,
@@ -417,18 +370,17 @@ def get_detector_positions(
     detector_grid = torch.stack([yy1, xx1_flipped], dim=-1)
     
     # 检测器的3D位置：从光束网格中提取
-    # 修正: 根据新的光束网格逻辑：
-    # - 网格从注入点(B2_start)开始初始化
-    # - 添加垂直方向的偏移
-    # - 光束方向的偏移从0开始，在终点结束
-    # 所以检测器位置 = grid_xyz[:, :, -1]（光束方向的最后一个索引）
+    # ✅ 根据 compute_beam_grid 的实现：
+    #   j = 0  对应 B2_end（检测面）
+    #   j = divls 对应 B2_start（注入面）
+    #   所以检测器阵列应该取 j=0 这一层
     if beam_grid is None:
         beam_grid = compute_beam_grid(beam_config, device=device)
     
     grid_xyz = beam_grid['grid_xyz']  # (div1_2, div2_2, divls_2, 3)
     
-    # 提取检测器位置：光束方向的最后一个索引（offset=0）
-    detector_coords = grid_xyz[:, :, -1, :]  # (div1_2, div2_2, 3)
+    # 提取检测器位置：光束方向的第 0 个索引（检测平面 B2_end）
+    detector_coords = grid_xyz[:, :, 0, :]  # (div1_2, div2_2, 3)
     
     return detector_coords, detector_grid
 

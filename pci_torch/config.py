@@ -204,23 +204,23 @@ class BeamConfig:
     
     @property
     def inj_xyz(self) -> np.ndarray:
-        """注入点笛卡尔坐标 [X, Y, Z]"""
-        R, Z, phi = self.injection_point
+        """注入点笛卡尔坐标 [X, Y, Z]，单位: m"""
+        R, Z, phi = self.injection_point   # 已经是 m
         return np.array([
             R * np.cos(2 * np.pi * phi),
             R * np.sin(2 * np.pi * phi),
             Z
-        ]) / 1000.0  # mm to m
+        ])
     
     @property
     def det_xyz(self) -> np.ndarray:
-        """检测点笛卡尔坐标 [X, Y, Z]"""
-        R, Z, phi = self.detection_point
+        """检测点笛卡尔坐标 [X, Y, Z]，单位: m"""
+        R, Z, phi = self.detection_point   # 已经是 m
         return np.array([
             R * np.cos(2 * np.pi * phi),
             R * np.sin(2 * np.pi * phi),
             Z
-        ]) / 1000.0  # mm to m
+        ])
     
     @property
     def beam_direction(self) -> np.ndarray:

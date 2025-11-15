@@ -75,6 +75,7 @@ def forward_projection(
         device: PyTorch设备 ('cuda' 或 'cpu')
         return_line_integral: 如果True，返回未积分的3D数据
         cache_beam_grid: 预计算的光束网格（可选，用于加速）
+        return_debug_info: 如果True，输出调试信息并保存Stage 1/2的调试文件（默认False）
     
     Returns:
         如果return_line_integral=False:
@@ -92,92 +93,97 @@ def forward_projection(
     density_3d, batch_added = ensure_batch_dim(density_3d)
     B, ntheta, nx, nz = density_3d.shape
     
-    print(f"DEBUG: 数据形状用于插值: {density_3d.shape}")
-    B, ntheta, nx, nz = density_3d.shape
-    
     # === 断点1: 数据加载阶段 (插值前的基础数据) ===
-    print("\n=== 断点1: 数据加载阶段 ===")
-    
-    import numpy as np
-    from pathlib import Path
-    
-    debug_dir = Path("debug_output")
-    debug_dir.mkdir(exist_ok=True)
-    
-    # 保存原始3D密度场（插值前的基础数据）
-    density_3d_numpy = density_3d.squeeze(0).cpu().numpy()  # 移除batch维度
-    np.savetxt(debug_dir / "stage1_3d_density_field.txt", density_3d_numpy.reshape(-1, nz), fmt='%.8e')
-    
-    # 保存密度场统计信息
-    density_stats = {
-        'stage': '1_data_loading_completed',
-        'shape': [ntheta, nx, nz],
-        'min': density_3d_numpy.min().item(),
-        'max': density_3d_numpy.max().item(),
-        'mean': density_3d_numpy.mean().item(),
-        'std': density_3d_numpy.std().item(),
-        'nonzero_count': np.count_nonzero(density_3d_numpy)
-    }
-    
-    import json
-    with open(debug_dir / "stage1_density_stats.json", 'w') as f:
-        json.dump(density_stats, f, indent=2)
-    
-    print(f"✓ 断点1: 3D密度场数据已保存")
-    print(f"  - 形状: {ntheta} × {nx} × {nz}")
-    print(f"  - 数据范围: [{density_stats['min']:.3e}, {density_stats['max']:.3e}]")
-    print(f"  - 非零元素: {density_stats['nonzero_count']} / {ntheta*nx*nz}")
-    print("=== 退出: 数据加载阶段完成 ===\n")
-    # exit(0)  # 注释掉，让程序继续运行到断点2
+    if return_debug_info:
+        print("\n=== 断点1: 数据加载阶段 ===")
+        
+        import numpy as np
+        from pathlib import Path
+        import json
+        
+        debug_dir = Path("debug_output")
+        debug_dir.mkdir(exist_ok=True)
+        
+        # 保存原始3D密度场（插值前的基础数据）
+        density_3d_numpy = density_3d.squeeze(0).cpu().numpy()  # 移除batch维度
+        np.savetxt(debug_dir / "stage1_3d_density_field.txt", density_3d_numpy.reshape(-1, nz), fmt='%.8e')
+        
+        # 保存密度场统计信息
+        density_stats = {
+            'stage': '1_data_loading_completed',
+            'shape': [ntheta, nx, nz],
+            'min': density_3d_numpy.min().item(),
+            'max': density_3d_numpy.max().item(),
+            'mean': density_3d_numpy.mean().item(),
+            'std': density_3d_numpy.std().item(),
+            'nonzero_count': np.count_nonzero(density_3d_numpy)
+        }
+        
+        with open(debug_dir / "stage1_density_stats.json", 'w') as f:
+            json.dump(density_stats, f, indent=2)
+        
+        print(f"✓ 断点1: 3D密度场数据已保存")
+        print(f"  - 形状: {ntheta} × {nx} × {nz}")
+        print(f"  - 数据范围: [{density_stats['min']:.3e}, {density_stats['max']:.3e}]")
+        print(f"  - 非零元素: {density_stats['nonzero_count']} / {ntheta*nx*nz}")
+        print("=== 退出: 数据加载阶段完成 ===\n")
     
     # 步骤1: 生成或使用缓存的光束网格
     if cache_beam_grid is None:
-        beam_grid = compute_beam_grid(beam_config, config=config, device=device)
+        beam_grid = compute_beam_grid(beam_config, config=config, device=device, debug=return_debug_info)
     else:
         beam_grid = cache_beam_grid
     
     # === 断点2: 几何计算阶段 ===
-    print("\n=== 断点2: 几何计算阶段 ===")
-    
-    grid_xyz = beam_grid['grid_xyz']  # (n_det_v, n_det_t, n_beam, 3)
-    n_det_v, n_det_t, n_beam, _ = grid_xyz.shape
-    
-    # 保存光束几何数据
-    grid_xyz_numpy = grid_xyz.cpu().numpy()
-    
-    # 保存坐标数据
-    x_coords = grid_xyz_numpy[:,:,:,0].flatten()  # X坐标
-    y_coords = grid_xyz_numpy[:,:,:,1].flatten()  # Y坐标  
-    z_coords = grid_xyz_numpy[:,:,:,2].flatten()  # Z坐标
-    
-    np.savetxt(debug_dir / "stage2_beam_geometry_x.txt", x_coords, fmt='%.8e')
-    np.savetxt(debug_dir / "stage2_beam_geometry_y.txt", y_coords, fmt='%.8e')
-    np.savetxt(debug_dir / "stage2_beam_geometry_z.txt", z_coords, fmt='%.8e')
-    
-    # 保存光束几何统计信息
-    beam_stats = {
-        'stage': '2_beam_geometry_completed',
-        'shape': [n_det_v, n_det_t, n_beam, 3],
-        'x_range': [float(x_coords.min()), float(x_coords.max())],
-        'y_range': [float(y_coords.min()), float(y_coords.max())],
-        'z_range': [float(z_coords.min()), float(z_coords.max())],
-        'total_points': int(len(x_coords))
-    }
-    
-    with open(debug_dir / "stage2_beam_stats.json", 'w') as f:
-        json.dump(beam_stats, f, indent=2)
-    
-    print(f"✓ 断点2: 光束几何数据已保存")
-    print(f"  - 网格形状: {n_det_v} × {n_det_t} × {n_beam} × 3")
-    print(f"  - 总采样点数: {len(x_coords)}")
-    print(f"  - X范围: [{beam_stats['x_range'][0]:.3f}, {beam_stats['x_range'][1]:.3f}]")
-    print(f"  - Y范围: [{beam_stats['y_range'][0]:.3f}, {beam_stats['y_range'][1]:.3f}]")
-    print(f"  - Z范围: [{beam_stats['z_range'][0]:.3f}, {beam_stats['z_range'][1]:.3f}]")
-    print("=== 退出: 几何计算阶段完成 ===\n")
-    # exit(0)  # 注释掉，让程序继续执行
+    if return_debug_info:
+        print("\n=== 断点2: 几何计算阶段 ===")
+        
+        import numpy as np
+        from pathlib import Path
+        import json
+        
+        debug_dir = Path("debug_output")
+        debug_dir.mkdir(exist_ok=True)
+        
+        grid_xyz = beam_grid['grid_xyz']  # (n_det_v, n_det_t, n_beam, 3)
+        n_det_v, n_det_t, n_beam, _ = grid_xyz.shape
+        
+        # 保存光束几何数据
+        grid_xyz_numpy = grid_xyz.cpu().numpy()
+        
+        # 保存坐标数据
+        x_coords = grid_xyz_numpy[:,:,:,0].flatten()  # X坐标
+        y_coords = grid_xyz_numpy[:,:,:,1].flatten()  # Y坐标  
+        z_coords = grid_xyz_numpy[:,:,:,2].flatten()  # Z坐标
+        
+        np.savetxt(debug_dir / "stage2_beam_geometry_x.txt", x_coords, fmt='%.8e')
+        np.savetxt(debug_dir / "stage2_beam_geometry_y.txt", y_coords, fmt='%.8e')
+        np.savetxt(debug_dir / "stage2_beam_geometry_z.txt", z_coords, fmt='%.8e')
+        
+        # 保存光束几何统计信息
+        beam_stats = {
+            'stage': '2_beam_geometry_completed',
+            'shape': [n_det_v, n_det_t, n_beam, 3],
+            'x_range': [float(x_coords.min()), float(x_coords.max())],
+            'y_range': [float(y_coords.min()), float(y_coords.max())],
+            'z_range': [float(z_coords.min()), float(z_coords.max())],
+            'total_points': int(len(x_coords))
+        }
+        
+        with open(debug_dir / "stage2_beam_stats.json", 'w') as f:
+            json.dump(beam_stats, f, indent=2)
+        
+        print(f"✓ 断点2: 光束几何数据已保存")
+        print(f"  - 网格形状: {n_det_v} × {n_det_t} × {n_beam} × 3")
+        print(f"  - 总采样点数: {len(x_coords)}")
+        print(f"  - X范围: [{beam_stats['x_range'][0]:.3f}, {beam_stats['x_range'][1]:.3f}]")
+        print(f"  - Y范围: [{beam_stats['y_range'][0]:.3f}, {beam_stats['y_range'][1]:.3f}]")
+        print(f"  - Z范围: [{beam_stats['z_range'][0]:.3f}, {beam_stats['z_range'][1]:.3f}]")
+        print("=== 退出: 几何计算阶段完成 ===\n")
 
     # 步骤3: 插值计算
-    print("开始插值计算...")
+    if return_debug_info:
+        print("开始插值计算...")
     
     # 提取坐标网格
     grid_xyz = beam_grid['grid_xyz']  # (n_det_v, n_det_t, n_beam, 3)
@@ -192,7 +198,8 @@ def forward_projection(
     from .interpolation import probe_local_trilinear
     
     # 执行插值
-    print("执行3D插值...")
+    if return_debug_info:
+        print("执行3D插值...")
     interpolated_values = probe_local_trilinear(
         density_3d,
         R_coords, Z_coords, PHI_coords,
@@ -200,7 +207,8 @@ def forward_projection(
     )
     
     # 步骤4: 重塑为原始形状并进行线积分
-    print("重塑数据并执行线积分...")
+    if return_debug_info:
+        print("重塑数据并执行线积分...")
     
     # 重塑为 (n_det_v, n_det_t, n_beam)
     pout1 = interpolated_values.reshape(n_det_v, n_det_t, n_beam)
@@ -210,27 +218,39 @@ def forward_projection(
     
     # 如果需要返回线积分数据而不是积分结果
     if return_line_integral:
-        # 保存调试数据
-        debug_dir = Path("debug_output")
-        debug_dir.mkdir(exist_ok=True)
-        
-        # 保存插值结果
-        np.savetxt(debug_dir / "python_interpolation_line_integral.txt", 
-                  interpolated_values.cpu().numpy(), fmt='%.8e')
-        
-        # 保存维度信息
-        import json
-        dims_info = {
-            'n_det_v': n_det_v,
-            'n_det_t': n_det_t, 
-            'n_beam': n_beam,
-            'total_points': len(interpolated_values),
-            'return_line_integral': True
-        }
-        with open(debug_dir / "python_line_integral_dims.json", 'w') as f:
-            json.dump(dims_info, f, indent=2)
-        
-        print(f"✓ 插值线积分数据已保存: {len(interpolated_values)}个点")
+        if return_debug_info:
+            # 保存调试数据
+            import numpy as np
+            from pathlib import Path
+            import json
+            
+            debug_dir = Path("debug_output")
+            debug_dir.mkdir(exist_ok=True)
+            
+            # 保存插值结果
+            np.savetxt(debug_dir / "python_interpolation_line_integral.txt", 
+                      interpolated_values.cpu().numpy(), fmt='%.8e')
+            
+            # 保存维度信息
+            dims_info = {
+                'n_det_v': n_det_v,
+                'n_det_t': n_det_t, 
+                'n_beam': n_beam,
+                'total_points': len(interpolated_values),
+                'return_line_integral': True
+            }
+            with open(debug_dir / "python_line_integral_dims.json", 'w') as f:
+                json.dump(dims_info, f, indent=2)
+            
+            print(f"✓ 插值线积分数据已保存: {len(interpolated_values)}个点")
+        else:
+            dims_info = {
+                'n_det_v': n_det_v,
+                'n_det_t': n_det_t, 
+                'n_beam': n_beam,
+                'total_points': len(interpolated_values),
+                'return_line_integral': True
+            }
         result = pout1  # 返回3D线积分数据
         debug_info = dims_info
     else:
@@ -243,7 +263,8 @@ def forward_projection(
             'pout2_shape': list(pout2.shape)
         }
     
-    print(f"✓ forward_projection完成: {result.shape}")
+    if return_debug_info:
+        print(f"✓ forward_projection完成: {result.shape}")
     
     return result, debug_info
 
