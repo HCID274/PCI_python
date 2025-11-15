@@ -126,11 +126,11 @@
 **结论**：
 
 * ✅ **Stage 3 几何对比完成**：所有检查点均已通过，Python 和 MATLAB 的光束几何计算完全一致。
-* 可以放心进入 Stage 4（密度场预处理）的调试。
+* ✅ **Stage 4 密度场预处理已完成**：预处理流程已与 MATLAB 完全对齐，可以进入 Stage 5（插值调试）。
 
 ---
 
-### 🔜 阶段 4：密度场预处理 – “从 3D 到 processed_density_field”
+### ✅ 阶段 4：密度场预处理 – “从 3D 到 processed_density_field”（已完成）
 
 > 这一层对应你原来的“第4阶段：数据预处理和时间序列处理”，但我们只看**一个时间点**。
 
@@ -167,6 +167,23 @@
 * **reshape 顺序**：是否总是 `(ntheta, nx, nz)` 一致
 * **padding 策略**：两边是不是都“复制边界值”而不是填 0（或别的）
 * **poloidal 方向翻转 / 重排**：有些代码会在 poloidal 上做 `flipud / circshift`，要看是否同步做了
+
+**验证结果：**
+
+* ✅ **形状完全一致**：`(401, 593, 30)`
+  * `401 = 400 + 1`（poloidal 加了一行周期边界）
+  * `593 = 128 + 383 + 81 + 1`（nx0 + inside + outside + 1）
+  * `30 = 28 + 1 + 1`（KZMt + 1 + toroidal 周期边界）
+* ✅ **数值完全一致**：`max |Δ| = 0`、`mean |Δ| = 0`
+  * 说明 MATLAB 的 `data3` 和 Python 的 `processed_density_field_py` 在所有网格点上数值完全一致，不仅是数值接近，而是逐点完全相同（bit 级一致）
+
+**结论：**
+
+* ✅ **Stage 4 密度场预处理已通过验收**
+* Python 实现的预处理流程（径向扩展、toroidal 周期边界、inside/outside padding、poloidal 重排 + 周期行）已与 MATLAB `probe_multi2` 的 `data3` 完全一致
+* 可以放心地把“密度场预处理这一层”当成黑盒，相当于：
+  * Python 的 `fread_data_s + preprocess_density_field_for_probe` ≡ MATLAB 的 `fread_data_s + p2_s + data2 + data3`
+* 后续调试可以专注于：光束几何 / 坐标变换 / 插值实现这些阶段
 
 ---
 
@@ -235,7 +252,10 @@
    * ✅ 网格生成顺序已对齐（遍历顺序一致）
    * ✅ φ 角处理和单位转换已对齐
 
-3. **Stage 4：processed density（padding + 周期 + 重排）对比**
+3. **✅ Stage 4：processed density（padding + 周期 + 重排）对比**
+   * ✅ 形状完全一致：`(401, 593, 30)`
+   * ✅ 数值完全一致：`max |Δ| = 0`、`mean |Δ| = 0`（bit 级一致）
+   * ✅ 预处理流程已与 MATLAB 完全对齐
 
 4. **Stage 5：单点插值中间量对比 → 单光束对比**
 

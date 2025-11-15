@@ -103,6 +103,24 @@ def run_single_time(config: Dict[str, Any], device: str = None):
         device=device, return_line_integral=True, return_debug_info=True  # DEBUG: 设置为True获取中间数据
     )
     
+    # === 导出 Stage 4: Python 侧 processed_density_field_py 用于和 MATLAB 对比 ===
+    from scipy.io import savemat
+    import numpy as np
+    import torch
+    
+    if 'processed_density_field_py' in debug_info:
+        proc = debug_info['processed_density_field_py']
+        if isinstance(proc, torch.Tensor):
+            # 去掉 batch 维（如果有），放到 CPU
+            proc_np = proc.squeeze(0).detach().cpu().numpy()
+        else:
+            proc_np = np.array(proc)
+        proc_mat_path = path_config.output_dir / "processed_density_field_py.mat"
+        savemat(str(proc_mat_path), {'processed_density_field_py': proc_np})
+        print(f"Saved processed_density_field_py.mat to: {proc_mat_path}")
+    else:
+        print("[WARN] debug_info 里没有 'processed_density_field_py'，请检查 forward_projection 是否按 Stage 4 修改")
+    
     # 保存结果
     print("保存结果...")
     output_path = path_config.output_dir / f"single_time_t{time_point:.2f}_var{task_config['var_type']}.mat"

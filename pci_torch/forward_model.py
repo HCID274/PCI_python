@@ -12,6 +12,95 @@ from .coordinates import cartesian_to_flux, cartesian_to_cylindrical
 from .interpolation import probe_local_trilinear
 from .utils import ensure_batch_dim, remove_batch_dim
 
+def preprocess_density_field_for_probe(
+    density_3d: torch.Tensor,
+    config: GENEConfig,
+    device: str = 'cuda'
+) -> torch.Tensor:
+    """
+    复刻 MATLAB probe_multi2 中的 p2 -> data3 预处理流程：
+      1. 径向扩展：nx0 -> nx0+1（最后一列填 0）
+      2. φ 方向周期边界：再加一层，复制第一层
+      3. inside/outside 径向 padding：嵌入到 IRMAX+1 = nx0+inside+outside+1
+      4. poloidal 重排：按照 NTGMAX/2 做循环移位
+      5. poloidal 周期边界：再加一行，复制第一行
+
+    输入:
+      density_3d: (ntheta, nx0, nz) 或 (B, ntheta, nx0, nz)
+    输出:
+      processed: (ntheta+1, IRMAX+1, nz+1) 或 (B, ntheta+1, IRMAX+1, nz+1)
+                 语义上对应 MATLAB 的 data3
+    """
+    density_3d = density_3d.to(device)
+
+    # 统一成有 batch 维
+    has_batch = (density_3d.dim() == 4)
+    if not has_batch:
+        density_3d = density_3d.unsqueeze(0)
+
+    B, ntheta, nx0, nz = density_3d.shape
+
+    inside = int(getattr(config, "inside", 0) or 0)
+    outside = int(getattr(config, "outside", 0) or 0)
+    KZMt = int(getattr(config, "KZMt", nz - 1))
+
+    if nz != KZMt + 1:
+        print(f"[WARN] preprocess_density_field_for_probe: "
+              f"nz={nz} 与 KZMt+1={KZMt+1} 不一致，请检查 config.KZMt / fread_data_s")
+
+    # === 1. 径向扩展：加一列 0 ===
+    zero_col = torch.zeros(
+        B, ntheta, 1, nz,
+        dtype=density_3d.dtype, device=density_3d.device
+    )
+    p2_s = torch.cat([density_3d, zero_col], dim=2)  # (B, ntheta, nx0+1, nz)
+
+    # === 2. φ 周期边界：最后一层复制第一层 ===
+    first_phi = p2_s[..., :1]                         # (B, ntheta, nx0+1, 1)
+    p2_s = torch.cat([p2_s, first_phi], dim=3)        # (B, ntheta, nx0+1, nz+1)
+
+    # === 3. inside/outside 径向 padding ===
+    nx_ext = nx0 + 1 + inside + outside               # IRMAX+1
+    nz_ext = nz + 1
+    data2 = torch.zeros(
+        B, ntheta, nx_ext, nz_ext,
+        dtype=density_3d.dtype, device=density_3d.device
+    )
+    # 对应 MATLAB: data2(:, inside+1:end-outside, :) = p2_s;
+    data2[:, :, inside:inside + (nx0 + 1), :] = p2_s
+
+    # === 4. poloidal 重排 ===
+    # MATLAB:
+    # for i = 1:NTGMAX
+    #   md = mod(i + NTGMAX/2, NTGMAX);
+    #   data3(md+1,:,:) = data2(i,:,:);
+    # end
+    NTGMAX = int(getattr(config, "NTGMAX", ntheta) or ntheta)
+
+    if NTGMAX != ntheta:
+        print(f"[WARN] preprocess_density_field_for_probe: "
+              f"NTGMAX={NTGMAX} 与 ntheta={ntheta} 不一致，默认使用 ntheta")
+
+        NTGMAX = ntheta
+
+    idx_src = torch.arange(NTGMAX, device=density_3d.device)      # 0..NTGMAX-1，对应 MATLAB 的 i-1
+    # md = mod(i + NTGMAX/2, NTGMAX)  (MATLAB, i=1..NTGMAX)
+    # 0-based: j0 = (i0 + 1 + NTGMAX/2) mod NTGMAX
+    idx_dst = (idx_src + NTGMAX // 2 + 1) % NTGMAX
+
+    data3 = torch.zeros_like(data2)
+    # data3[:, md, :, :] = data2[:, i, :, :]
+    data3[:, idx_dst, :, :] = data2[:, idx_src, :, :]
+
+    # === 5. poloidal 周期边界：最后一行复制第一行 ===
+    first_theta = data3[:, :1, :, :]                  # (B, 1, nx_ext, nz_ext)
+    data3 = torch.cat([data3, first_theta], dim=1)    # (B, ntheta+1, nx_ext, nz_ext)
+
+    if not has_batch:
+        data3 = data3[0]
+
+    return data3
+
 
 def _batch_probe_local_trilinear(
     density_3d: torch.Tensor,
@@ -86,16 +175,17 @@ def forward_projection(
     
     完全可微分，支持批处理和自动微分
     """
-    # 确保density_3d在正确的设备上
+    # === 0. 统一设备 & batch 维 ===
     density_3d = density_3d.to(device)
-    
-    # 处理batch维度
     density_3d, batch_added = ensure_batch_dim(density_3d)
-    B, ntheta, nx, nz = density_3d.shape
+    B, ntheta_raw, nx_raw, nz_raw = density_3d.shape
     
-    # === 断点1: 数据加载阶段 (插值前的基础数据) ===
+    # 预留一个 debug dict，后面一起返回
+    extra_debug = {}
+    
+    # === 1. 断点1：保存"原始 p2" (MATLAB 的 p2) ===
     if return_debug_info:
-        print("\n=== 断点1: 数据加载阶段 ===")
+        print("\n=== 断点1: 原始 3D 密度场 (p2) ===")
         
         import numpy as np
         from pathlib import Path
@@ -104,37 +194,85 @@ def forward_projection(
         debug_dir = Path("debug_output")
         debug_dir.mkdir(exist_ok=True)
         
-        # 保存原始3D密度场（插值前的基础数据）
-        density_3d_numpy = density_3d.squeeze(0).cpu().numpy()  # 移除batch维度
-        np.savetxt(debug_dir / "stage1_3d_density_field.txt", density_3d_numpy.reshape(-1, nz), fmt='%.8e')
+        density_raw_np = density_3d.squeeze(0).cpu().numpy()
+        np.savetxt(
+            debug_dir / "stage1_3d_density_field_raw_p2.txt",
+            density_raw_np.reshape(-1, nz_raw),
+            fmt="%.8e"
+        )
         
-        # 保存密度场统计信息
-        density_stats = {
-            'stage': '1_data_loading_completed',
-            'shape': [ntheta, nx, nz],
-            'min': density_3d_numpy.min().item(),
-            'max': density_3d_numpy.max().item(),
-            'mean': density_3d_numpy.mean().item(),
-            'std': density_3d_numpy.std().item(),
-            'nonzero_count': np.count_nonzero(density_3d_numpy)
+        density_raw_stats = {
+            "stage": "1_raw_p2",
+            "shape": [ntheta_raw, nx_raw, nz_raw],
+            "min": float(density_raw_np.min()),
+            "max": float(density_raw_np.max()),
+            "mean": float(density_raw_np.mean()),
+            "std": float(density_raw_np.std()),
+            "nonzero_count": int(np.count_nonzero(density_raw_np)),
         }
         
-        with open(debug_dir / "stage1_density_stats.json", 'w') as f:
-            json.dump(density_stats, f, indent=2)
+        with open(debug_dir / "stage1_density_raw_stats.json", "w") as f:
+            json.dump(density_raw_stats, f, indent=2)
         
-        print(f"✓ 断点1: 3D密度场数据已保存")
-        print(f"  - 形状: {ntheta} × {nx} × {nz}")
-        print(f"  - 数据范围: [{density_stats['min']:.3e}, {density_stats['max']:.3e}]")
-        print(f"  - 非零元素: {density_stats['nonzero_count']} / {ntheta*nx*nz}")
-        print("=== 退出: 数据加载阶段完成 ===\n")
+        print(f"  shape: {ntheta_raw} × {nx_raw} × {nz_raw}")
+        print(f"  range: [{density_raw_stats['min']:.3e}, {density_raw_stats['max']:.3e}]")
+        
+        # 也放进 debug_info 返回给上层 .mat/.npz
+        extra_debug["density_raw_p2"] = density_3d.detach().clone()
     
-    # 步骤1: 生成或使用缓存的光束网格
+    # === 1.5 NEW: 做 MATLAB 等价的预处理，得到 processed_density_field_py ===
+    density_proc = preprocess_density_field_for_probe(
+        density_3d, config, device=device
+    )
+    B, ntheta, nx, nz = density_proc.shape  # 注意这里的 nz 已经是 KZMt+2
+    
+    # 保存 processed 版本，方便对比 MATLAB data3
+    if return_debug_info:
+        import numpy as np
+        from pathlib import Path
+        import json
+        
+        debug_dir = Path("debug_output")
+        debug_dir.mkdir(exist_ok=True)
+        
+        density_proc_np = density_proc.squeeze(0).cpu().numpy()
+        # 为了看清楚 φ 方向结构，用 (ntheta+1)*nx 行，每行 nz 列
+        np.savetxt(
+            debug_dir / "stage1b_processed_density_field_py.txt",
+            density_proc_np.reshape(-1, nz),
+            fmt="%.8e"
+        )
+        
+        density_proc_stats = {
+            "stage": "1b_processed_density_py",
+            "shape": [ntheta, nx, nz],
+            "min": float(density_proc_np.min()),
+            "max": float(density_proc_np.max()),
+            "mean": float(density_proc_np.mean()),
+            "std": float(density_proc_np.std()),
+            "nonzero_count": int(np.count_nonzero(density_proc_np)),
+        }
+        
+        with open(debug_dir / "stage1b_density_processed_stats.json", "w") as f:
+            json.dump(density_proc_stats, f, indent=2)
+        
+        print(f"=== 断点1b: 预处理后的 3D 密度场 (Python data3 等价) ===")
+        print(f"  shape: {ntheta} × {nx} × {nz}")
+        print(f"  range: [{density_proc_stats['min']:.3e}, {density_proc_stats['max']:.3e}]")
+        
+        # 这两个变量会被 run_single_time 存进 .mat / .npz 里
+        extra_debug["processed_density_field_py"] = density_proc.detach().clone()
+        extra_debug["processed_density_field_py_shape"] = [ntheta, nx, nz]
+    
+    # 后续几何 / 插值都用预处理后的场
+    density_3d = density_proc
+    
+    # === 原有"断点2: 几何计算阶段"保持不变 ===
     if cache_beam_grid is None:
         beam_grid = compute_beam_grid(beam_config, config=config, device=device, debug=return_debug_info)
     else:
         beam_grid = cache_beam_grid
     
-    # === 断点2: 几何计算阶段 ===
     if return_debug_info:
         print("\n=== 断点2: 几何计算阶段 ===")
         
@@ -181,90 +319,53 @@ def forward_projection(
         print(f"  - Z范围: [{beam_stats['z_range'][0]:.3f}, {beam_stats['z_range'][1]:.3f}]")
         print("=== 退出: 几何计算阶段完成 ===\n")
 
-    # 步骤3: 插值计算
-    if return_debug_info:
-        print("开始插值计算...")
-    
-    # 提取坐标网格
-    grid_xyz = beam_grid['grid_xyz']  # (n_det_v, n_det_t, n_beam, 3)
+    # === 插值阶段 ===
+    grid_xyz = beam_grid["grid_xyz"]               # (n_det_v, n_det_t, n_beam, 3)
     n_det_v, n_det_t, n_beam, _ = grid_xyz.shape
     
-    # 提取坐标
-    R_coords = grid_xyz[:,:,:,0].flatten()  # X坐标
-    Z_coords = grid_xyz[:,:,:,1].flatten()  # Y坐标  
-    PHI_coords = grid_xyz[:,:,:,2].flatten()  # Z坐标
+    R_coords = grid_xyz[:, :, :, 0].flatten()
+    Z_coords = grid_xyz[:, :, :, 1].flatten()
+    PHI_coords = grid_xyz[:, :, :, 2].flatten()
     
-    # 调用插值函数
     from .interpolation import probe_local_trilinear
     
-    # 执行插值
-    if return_debug_info:
-        print("执行3D插值...")
     interpolated_values = probe_local_trilinear(
-        density_3d,
+        density_3d,       # 注意这里已经是 processed 版本
         R_coords, Z_coords, PHI_coords,
         config
     )
     
-    # 步骤4: 重塑为原始形状并进行线积分
-    if return_debug_info:
-        print("重塑数据并执行线积分...")
-    
-    # 重塑为 (n_det_v, n_det_t, n_beam)
     pout1 = interpolated_values.reshape(n_det_v, n_det_t, n_beam)
+    pout2 = torch.sum(pout1, dim=2)
     
-    # 线积分：沿光束方向求和
-    pout2 = torch.sum(pout1, dim=2)  # (n_det_v, n_det_t)
-    
-    # 如果需要返回线积分数据而不是积分结果
     if return_line_integral:
-        if return_debug_info:
-            # 保存调试数据
-            import numpy as np
-            from pathlib import Path
-            import json
-            
-            debug_dir = Path("debug_output")
-            debug_dir.mkdir(exist_ok=True)
-            
-            # 保存插值结果
-            np.savetxt(debug_dir / "python_interpolation_line_integral.txt", 
-                      interpolated_values.cpu().numpy(), fmt='%.8e')
-            
-            # 保存维度信息
-            dims_info = {
-                'n_det_v': n_det_v,
-                'n_det_t': n_det_t, 
-                'n_beam': n_beam,
-                'total_points': len(interpolated_values),
-                'return_line_integral': True
-            }
-            with open(debug_dir / "python_line_integral_dims.json", 'w') as f:
-                json.dump(dims_info, f, indent=2)
-            
-            print(f"✓ 插值线积分数据已保存: {len(interpolated_values)}个点")
-        else:
-            dims_info = {
-                'n_det_v': n_det_v,
-                'n_det_t': n_det_t, 
-                'n_beam': n_beam,
-                'total_points': len(interpolated_values),
-                'return_line_integral': True
-            }
-        result = pout1  # 返回3D线积分数据
-        debug_info = dims_info
-    else:
-        result = pout2  # 返回2D积分图像
-        debug_info = {
-            'n_det_v': n_det_v,
-            'n_det_t': n_det_t,
-            'n_beam': n_beam,
-            'pout1_shape': list(pout1.shape),
-            'pout2_shape': list(pout2.shape)
+        # 你的原有 dims_info 构造代码...
+        dims_info = {
+            "n_det_v": n_det_v,
+            "n_det_t": n_det_t,
+            "n_beam": n_beam,
+            "total_points": len(interpolated_values),
+            "return_line_integral": True,
         }
+        if return_debug_info:
+            dims_info.update(extra_debug)
+        debug_info = dims_info
+        result = pout1
+    else:
+        base_info = {
+            "n_det_v": n_det_v,
+            "n_det_t": n_det_t,
+            "n_beam": n_beam,
+            "pout1_shape": list(pout1.shape),
+            "pout2_shape": list(pout2.shape),
+        }
+        if return_debug_info:
+            base_info.update(extra_debug)
+        debug_info = base_info
+        result = pout2
     
     if return_debug_info:
-        print(f"✓ forward_projection完成: {result.shape}")
+        print(f"✓ forward_projection 完成, 结果 shape = {tuple(result.shape)}")
     
     return result, debug_info
 

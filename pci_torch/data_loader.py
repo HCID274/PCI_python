@@ -1146,3 +1146,68 @@ def fread_data_s(
     return tensor
 
 
+def save_debug_data(config, output_mat_path: str):
+    """
+    保存 Python 侧第2阶段（平衡态 + 磁场）调试数据到一个 .mat 文件。
+
+    对 run_pci.py 里的调用:
+        debug_data = save_debug_data(gene_config, 'debug_stage_2_python.mat')
+    完全兼容，返回一个 dict 方便你后面需要时再用。
+    """
+    import numpy as np
+    import torch
+    from scipy.io import savemat
+
+    debug_data = {}
+
+    # ===== 1. 磁场 3D 数据 (GBPR, GBPZ, GBTP, GBPP) =====
+    for key in ['GBPR_3d', 'GBPZ_3d', 'GBTP_3d', 'GBPP_3d']:
+        val = getattr(config, key, None)
+        if val is not None:
+            if torch.is_tensor(val):
+                arr = val.detach().cpu().numpy()
+            else:
+                arr = np.array(val)
+            debug_data[key] = arr
+            print(f"DEBUG: Saved {key} with shape: {arr.shape}")
+
+    # ===== 2. 坐标数据: GRC, GZC, GFC, GAC, GTC_f, GTC_c, PA =====
+    for key in ['GRC', 'GZC', 'GFC', 'GAC', 'GTC_f', 'GTC_c', 'PA']:
+        val = getattr(config, key, None)
+        if val is not None:
+            if torch.is_tensor(val):
+                arr = val.detach().cpu().numpy()
+            else:
+                arr = np.array(val)
+            debug_data[key] = arr
+            print(f"DEBUG: Saved {key} with shape: {arr.shape}")
+
+    # ===== 3. 网格参数 RG（6 个 double）=====
+    # load_equdata_be 里你是这么存的: RG1, RG2, RG3，每个长度 2
+    rg_vals = []
+    for key in ['RG1', 'RG2', 'RG3']:
+        val = getattr(config, key, None)
+        if val is not None:
+            rg_vals.extend(list(val))
+    if rg_vals:
+        rg_arr = np.array(rg_vals, dtype=np.float64)
+        debug_data['RG'] = rg_arr
+        print(f"DEBUG: Saved RG with shape: {rg_arr.shape}")
+
+    # ===== 4. 网格步长 DR（3 个标量）=====  ★ 这里是之前报错的地方 ★
+    dr_vals = []
+    for key in ['DR1', 'DR2', 'DR3']:
+        if hasattr(config, key):
+            dr_vals.append(float(getattr(config, key)))
+    if dr_vals:
+        # 不再用 np.concatenate，而是直接构造成一维数组
+        dr_arr = np.array(dr_vals, dtype=np.float64)
+        debug_data['DR'] = dr_arr
+        print(f"DEBUG: Saved DR with shape: {dr_arr.shape}")
+
+    # ===== 5. 真正写 mat 文件 =====
+    savemat(output_mat_path, debug_data)
+    print(f"Python debug data saved to: {output_mat_path}")
+
+    return debug_data
+
