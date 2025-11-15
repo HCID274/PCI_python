@@ -35,6 +35,101 @@ def load_config(config_file: str = None) -> Dict[str, Any]:
     with open(config_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
+
+def export_probe_debug_data(
+    gene_config,
+    beam_config,
+    density_3d,
+    debug_info,
+    device: str,
+    path_config: PathConfig,
+):
+    """
+    使用 Python 插值内核在单个采样点上做调试，并导出给 Octave 使用。
+
+    生成文件:
+      - {output_dir}/probe_debug_py.mat
+    """
+    try:
+        from pci_torch.beam_geometry import compute_beam_grid
+        from pci_torch.interpolation import probe_local_trilinear
+        import scipy.io as sio
+        import numpy as np
+        import torch
+    except Exception as e:
+        print(f"[WARN] export_probe_debug_data 依赖导入失败，跳过探针调试导出: {e}")
+        return
+
+    if "processed_density_field_py" not in debug_info:
+        print("[WARN] debug_info 中没有 'processed_density_field_py'，跳过探针调试导出")
+        return
+
+    data3 = debug_info["processed_density_field_py"]
+    if isinstance(data3, torch.Tensor):
+        # shape: (1, ntheta+1, nx_ext, nz+1) 或 (ntheta+1, nx_ext, nz+1)
+        data3 = data3.squeeze(0).detach().to("cpu")
+
+    # 重新计算 beam 网格，取中间的一个点作为探针位置
+    beam_grid = compute_beam_grid(beam_config, config=gene_config, device=device, debug=False)
+    grid_xyz = beam_grid["grid_xyz"]  # (n_det_v, n_det_t, n_beam, 3)
+    n_det_v, n_det_t, n_beam, _ = grid_xyz.shape
+
+    iv = n_det_v // 2
+    it = n_det_t // 2
+    ib = n_beam // 2
+
+    point = grid_xyz[iv, it, ib, :]  # (3,)
+    x = float(point[0].item())
+    y = float(point[1].item())
+    z = float(point[2].item())
+
+    # 直角坐标 -> 柱坐标 (R, Z, PHI)
+    # 与 MATLAB 一样: x = R cos(phi), y = R sin(phi), z = Z
+    R_debug = (x ** 2 + y ** 2) ** 0.5
+    PHI_debug = np.arctan2(y, x)
+    Z_debug = z
+
+    print("\n=== Python 单点插值调试 ===")
+    print(f"  选取探针点索引: iv={iv}, it={it}, ib={ib}")
+    print(f"  Cartesian: x={x:.6f}, y={y:.6f}, z={z:.6f}")
+    print(f"  Cylindrical: R={R_debug:.6f}, Z={Z_debug:.6f}, PHI={PHI_debug:.6f}")
+
+    # 调用你已经重写好的 probe_local_trilinear
+    R_t = torch.tensor(R_debug, dtype=data3.dtype, device=device)
+    Z_t = torch.tensor(Z_debug, dtype=data3.dtype, device=device)
+    PHI_t = torch.tensor(PHI_debug, dtype=data3.dtype, device=device)
+
+    data3_dev = data3.to(device)
+
+    z_py_t = probe_local_trilinear(data3_dev, R_t, Z_t, PHI_t, gene_config)
+    z_py = float(z_py_t.detach().cpu().item())
+    print(f"  Python 插值结果 z_py = {z_py:.16e}")
+
+    # equilibrium 信息转 numpy
+    def _to_np(x):
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().numpy()
+        import numpy as np
+        return np.asarray(x)
+
+    import numpy as np
+    mat_dict = {
+        "processed_density_field_py": data3.cpu().numpy(),   # (ntheta+1, nx_ext, nz+1)
+        "PA": _to_np(gene_config.PA),                        # (2,)
+        "GAC": _to_np(gene_config.GAC),                      # (nx, ntheta)
+        "GTC_c": _to_np(gene_config.GTC_c),                  # (something, ntheta)
+        "KZMt": np.array(gene_config.KZMt, dtype=np.int32),  # 标量
+        "R_debug": np.array(R_debug, dtype=np.float64),
+        "Z_debug": np.array(Z_debug, dtype=np.float64),
+        "PHI_debug": np.array(PHI_debug, dtype=np.float64),
+        "z_py": np.array(z_py, dtype=np.float64),
+    }
+
+    out_path = path_config.output_dir / "probe_debug_py.mat"
+    sio.savemat(str(out_path), mat_dict)
+    print(f"  调试数据已保存到: {out_path}\n")
+
+
 def run_single_time(config: Dict[str, Any], device: str = None):
     """运行单时间点分析"""
     print("=" * 80)
@@ -120,6 +215,16 @@ def run_single_time(config: Dict[str, Any], device: str = None):
         print(f"Saved processed_density_field_py.mat to: {proc_mat_path}")
     else:
         print("[WARN] debug_info 里没有 'processed_density_field_py'，请检查 forward_projection 是否按 Stage 4 修改")
+    
+    # === 单点插值调试导出 (给 Octave 用) ===
+    export_probe_debug_data(
+        gene_config,
+        beam_config,
+        density_3d,
+        debug_info,
+        device=device,
+        path_config=path_config,
+    )
     
     # 保存结果
     print("保存结果...")
